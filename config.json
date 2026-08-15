@@ -1,0 +1,7 @@
+{
+    "gateway1": "192.168.1.101",
+    "gateway2": "192.168.1.102",
+    "save_path": "data",
+    "account": "user@example.com.tw",
+    "device_number": "DEVICE001"
+}
