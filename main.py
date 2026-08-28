@@ -418,6 +418,10 @@ class MainWindow:
                 "btnSettings"
             )
         )
+        print(
+            "btnSettings =",
+            self.btnSettings
+        )
 
         self.btnExit = (
             self.ui.findChild(
@@ -889,25 +893,48 @@ class MainWindow:
 
     def open_settings(self):
 
-        dialog = SettingsDialog(
-            self.config,
-            self
-        )
+        print("DEBUG: 帳號設定按鈕被按下")
 
-        if dialog.exec():
+        try:
 
-            self.config = load_config()
-
-            self.update_gateway_display()
-
-            self.today_folder = (
-                create_today_folder(
-                    self.config["save_path"]
-                )
+            dialog = SettingsDialog(
+                self.config,
+                self.ui
             )
 
-            self.status_label.setText(
-                "設定已更新"
+            print("DEBUG: SettingsDialog 建立成功")
+
+            result = dialog.exec()
+
+            print(
+                f"DEBUG: SettingsDialog 結束，result = {result}"
+        )
+
+            if result:
+
+                self.config = load_config()
+
+                self.update_gateway_display()
+
+                self.today_folder = create_today_folder(
+                    self.config["save_path"]
+                )
+
+                self.status_label.setText(
+                    "設定已更新"
+                )
+
+        except Exception as e:
+
+            print(
+                "帳號設定發生錯誤：",
+                repr(e)
+            )
+
+            QMessageBox.critical(
+                self.ui,
+                "帳號設定錯誤",
+                f"開啟帳號設定時發生錯誤：\n\n{e}"
             )
 
     # ========================================================
