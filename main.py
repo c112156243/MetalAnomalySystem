@@ -447,16 +447,16 @@ class MainWindow:
         self.tableHistory = self.ui.tableHistory
 
         # ----------------------------------------------------
-        # 新增狀態 Label
+        # 狀態 Label（已放在 .ui 內）
         # ----------------------------------------------------
 
-        self.status_label = QLabel(
-            "系統待機中"
+        self.status_label = self.ui.findChild(
+            QLabel,
+            "lblStatus"
         )
 
-        self.status_label.setAlignment(
-            Qt.AlignCenter
-        )
+        if self.status_label is None:
+            raise RuntimeError("UI 中找不到 lblStatus")
 
 
         # ----------------------------------------------------
@@ -511,6 +511,10 @@ class MainWindow:
 
         self.update_gateway_display()
 
+        self.status_label.setText(
+            "系統待機中"
+        )
+
     # ========================================================
     # 歷史紀錄 Table
     # ========================================================
@@ -547,12 +551,36 @@ class MainWindow:
         gateway2 = self.config["gateway2"]
 
         self.ui.lblGateway1.setText(
-            f"閘道位置1：{gateway1}"
+            gateway1
         )
 
         self.ui.lblGateway2.setText(
-            f"閘道位置2：{gateway2}"
+            gateway2
         )
+
+    # ========================================================
+    # 按鈕執行中樣式
+    # ========================================================
+
+    def set_action_button_running(self, button, running):
+
+        if running:
+            button.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: #72B447;
+                    color: white;
+                    border: none;
+                    font-size: 20px;
+                    font-weight: bold;
+                    padding: 4px 14px;
+                    min-height: 48px;
+                }
+                """
+            )
+        else:
+            # 清除 inline style，恢復 .ui 裡的共用藍色樣式
+            button.setStyleSheet("")
 
     # ========================================================
     # 擷取資料
@@ -572,6 +600,11 @@ class MainWindow:
             "background-color: yellow; "
             "color: black; "
             "font-weight: bold;"
+        )
+
+        self.set_action_button_running(
+            self.btnCapture,
+            True
         )
 
         self.btnCapture.setEnabled(False)
@@ -677,6 +710,11 @@ class MainWindow:
         )
 
         self.btnCapture.setEnabled(True)
+
+        self.set_action_button_running(
+            self.btnCapture,
+            False
+        )
 
         # ----------------------------------------------------
         # 新增歷史紀錄
@@ -788,13 +826,25 @@ class MainWindow:
         if not self.current_voltage:
 
             QMessageBox.warning(
-                self,
+                self.ui,
                 "無資料",
                 "目前沒有可儲存的擷取資料。\n"
                 "請先按「擷取」。"
             )
 
             return
+
+        # ----------------------------------------------------
+        # 儲存執行中：按鈕變色
+        # ----------------------------------------------------
+
+        self.set_action_button_running(
+            self.btnSave,
+            True
+        )
+        self.btnSave.setEnabled(False)
+        self.status_label.setText("進行中：正在儲存資料...")
+        QApplication.processEvents()
 
         # ----------------------------------------------------
         # 確認今天資料夾
@@ -874,7 +924,7 @@ class MainWindow:
             )
 
             QMessageBox.information(
-                self,
+                self.ui,
                 "儲存成功",
                 f"資料已儲存：\n\n{filepath}"
             )
@@ -882,9 +932,16 @@ class MainWindow:
         except Exception as e:
 
             QMessageBox.critical(
-                self,
+                self.ui,
                 "儲存失敗",
                 f"CSV 儲存失敗：\n{e}"
+            )
+
+        finally:
+            self.btnSave.setEnabled(True)
+            self.set_action_button_running(
+                self.btnSave,
+                False
             )
 
     # ========================================================
