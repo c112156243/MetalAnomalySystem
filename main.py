@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile
+from PySide6.QtGui import QIcon
 
 
 # ============================================================
@@ -45,6 +46,12 @@ UI_FILE = os.path.join(
     BASE_DIR,
     "ui",
     "main_window.ui"
+)
+
+# 視窗圖示位置
+ICON_FILE = os.path.join(
+    BASE_DIR,
+    "app_icon.png"
 )
 
 
@@ -93,6 +100,32 @@ def save_config(config):
             ensure_ascii=False,
             indent=4
         )
+
+
+def show_message_box(parent, icon, title, text):
+    """顯示統一樣式的訊息彈窗。"""
+
+    message_box = QMessageBox(parent)
+    message_box.setIcon(icon)
+    message_box.setWindowIcon(QIcon(ICON_FILE))
+    message_box.setWindowTitle(title)
+    message_box.setText(text)
+    message_box.setStyleSheet(
+        """
+        QMessageBox QLabel {
+            color: #1f4e79;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        QMessageBox QPushButton {
+            color: white;
+            background-color: #4b78c6;
+            min-width: 90px;
+            padding: 6px 14px;
+        }
+        """
+    )
+    message_box.exec()
 
 
 # ============================================================
@@ -144,7 +177,32 @@ class SettingsDialog(QDialog):
         self.config = config
 
         self.setWindowTitle("帳號設定")
+        self.setWindowIcon(QIcon(ICON_FILE))
         self.resize(450, 300)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background-color: white;
+            }
+            QDialog QLabel {
+                color: #1f4e79;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QDialog QLineEdit {
+                color: #1f4e79;
+                background-color: white;
+                border: 1px solid #8aa9c7;
+                padding: 5px;
+            }
+            QDialog QPushButton {
+                color: white;
+                background-color: #4b78c6;
+                min-height: 36px;
+                padding: 4px 14px;
+            }
+            """
+        )
 
         # ----------------------------------------------------
         # 欄位
@@ -302,8 +360,9 @@ class SettingsDialog(QDialog):
 
         save_config(self.config)
 
-        QMessageBox.information(
+        show_message_box(
             self,
+            QMessageBox.Icon.Information,
             "設定完成",
             "設定已成功儲存。"
         )
@@ -378,6 +437,9 @@ class MainWindow:
 
         self.ui.setWindowTitle(
             "金屬製造異常警示通報系統"
+        )
+        self.ui.setWindowIcon(
+            QIcon(ICON_FILE)
         )
 
         # ----------------------------------------------------
@@ -825,8 +887,9 @@ class MainWindow:
 
         if not self.current_voltage:
 
-            QMessageBox.warning(
+            show_message_box(
                 self.ui,
+                QMessageBox.Icon.Warning,
                 "無資料",
                 "目前沒有可儲存的擷取資料。\n"
                 "請先按「擷取」。"
@@ -923,16 +986,18 @@ class MainWindow:
                 "資料儲存完成"
             )
 
-            QMessageBox.information(
+            show_message_box(
                 self.ui,
+                QMessageBox.Icon.Information,
                 "儲存成功",
                 f"資料已儲存：\n\n{filepath}"
             )
 
         except Exception as e:
 
-            QMessageBox.critical(
+            show_message_box(
                 self.ui,
+                QMessageBox.Icon.Critical,
                 "儲存失敗",
                 f"CSV 儲存失敗：\n{e}"
             )
@@ -988,8 +1053,9 @@ class MainWindow:
                 repr(e)
             )
 
-            QMessageBox.critical(
+            show_message_box(
                 self.ui,
+                QMessageBox.Icon.Critical,
                 "帳號設定錯誤",
                 f"開啟帳號設定時發生錯誤：\n\n{e}"
             )
