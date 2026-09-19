@@ -14,6 +14,9 @@ env/
 # Generated data
 data/
 
+# Local email/account settings (use config.example.json as template)
+/config.json
+
 # Logs
 *.log
 
@@ -23,3 +26,6 @@ data/
 # OS files
 .DS_Store
 Thumbs.db
+
+#codex
+AGENTS.md

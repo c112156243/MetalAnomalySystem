@@ -4,8 +4,12 @@ import csv
 import json
 import random
 from datetime import datetime
+from queue import Empty
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QObject, QEvent
+from email_notifier import (
+    EmailNotifier, NotificationConfigError, apply_email_defaults, make_notification
+)
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -55,13 +59,13 @@ UI_FILE = os.path.join(
 def load_config():
     """讀取 config.json"""
 
-    default_config = {
+    default_config = apply_email_defaults({
         "gateway1": "192.168.1.101",
         "gateway2": "192.168.1.102",
         "save_path": "data",
         "account": "user@example.com.tw",
         "device_number": "DEVICE001"
-    }
+    })
 
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config)
@@ -76,7 +80,7 @@ def load_config():
             if key not in config:
                 config[key] = value
 
-        return config
+        return apply_email_defaults(config)
 
     except Exception as e:
         print("讀取設定檔失敗:", e)
@@ -315,7 +319,7 @@ class SettingsDialog(QDialog):
 # 主視窗
 # ============================================================
 
-class MainWindow:
+class MainWindow(QObject):
 
     def __init__(self):
 
@@ -458,6 +462,26 @@ class MainWindow:
         if self.status_label is None:
             raise RuntimeError("UI 中找不到 lblStatus")
 
+        # 獨立使用既有 QStatusBar，不覆蓋擷取／儲存狀態。
+        self.email_status_label = QLabel(self.ui)
+        self.email_status_label.setObjectName("lblEmailStatus")
+        self.email_status_label.setStyleSheet("color: #222222; padding: 3px;")
+        self.email_status_label.setWordWrap(True)
+        self.ui.statusBar().addWidget(self.email_status_label, 1)
+        self.notifier = EmailNotifier()
+        self._closing = False
+        self._capture_id = 0
+        self._latest_notification_id = None
+        self._notification_items = {}
+        self._notification_times = {}
+        self.ui.installEventFilter(self)
+        self._email_timer = QTimer(self)
+        self._email_timer.timeout.connect(self.poll_email_results)
+        self._email_timer.start(100)
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setSingleShot(True)
+        self._capture_timer.timeout.connect(self.generate_test_data)
+        self.show_email_ready_status()
 
         # ----------------------------------------------------
         # 初始化資料
@@ -588,6 +612,10 @@ class MainWindow:
 
     def capture_data(self):
 
+        if self._closing:
+            return
+        self._latest_notification_id = None
+        self.email_status_label.setText("Email：擷取中，等待本次結果（先前通知狀態請查看歷史列提示）")
         self.status_label.setText(
             "進行中：正在擷取 Voltage / Current..."
         )
@@ -613,10 +641,7 @@ class MainWindow:
         # 使用 Timer 模擬設備擷取
         # ----------------------------------------------------
 
-        QTimer.singleShot(
-            1000,
-            self.generate_test_data
-        )
+        self._capture_timer.start(1000)
 
     # ========================================================
     # 產生測試資料
@@ -624,6 +649,8 @@ class MainWindow:
 
     def generate_test_data(self):
 
+        if self._closing:
+            return
         # ----------------------------------------------------
         # 模擬 1000 筆 Voltage
         # ----------------------------------------------------
@@ -652,6 +679,7 @@ class MainWindow:
 
         self.current_score = score
         self.current_prediction = prediction
+        completed_at = datetime.now()
 
         # ----------------------------------------------------
         # 更新畫面
@@ -721,6 +749,60 @@ class MainWindow:
         # ----------------------------------------------------
 
         self.add_history()
+        self.notify_capture_completed(completed_at, score, prediction)
+
+    def show_email_ready_status(self):
+        email = self.config.get("email", {})
+        if isinstance(email, dict) and email.get("enabled", False) is False:
+            status = "通知未啟用"
+        else:
+            try:
+                make_notification(self.config, 0, datetime.now(), 0, "NG")
+                status = "通知已啟用，等待 NG 擷取結果"
+            except NotificationConfigError as error:
+                status = "設定錯誤：" + str(error)
+        self.email_status_label.setText("Email：" + status)
+
+    def notify_capture_completed(self, completed_at, score, prediction):
+        self._capture_id += 1
+        capture_id = self._capture_id
+        self._latest_notification_id = capture_id
+        self._notification_times[capture_id] = completed_at
+        self._notification_items[capture_id] = self.tableHistory.item(
+            self.tableHistory.rowCount() - 1, 2
+        )
+        try:
+            job = make_notification(self.config, capture_id, completed_at, score, prediction)
+            if prediction != "NG":
+                status = "本次 OK，不寄送通知"
+            elif job is None:
+                status = "通知未啟用"
+            else:
+                error = self.notifier.submit(job)
+                status = "寄送失敗：" + error if error else "通知等待寄送"
+        except NotificationConfigError as error:
+            status = "設定錯誤：" + str(error)
+        self.update_email_status(capture_id, status)
+
+    def update_email_status(self, capture_id, status):
+        completed_at = self._notification_times[capture_id]
+        text = f"Email #{capture_id}（{completed_at:%Y-%m-%d %H:%M:%S}）：{status}"
+        item = self._notification_items.get(capture_id)
+        if item is not None:
+            item.setToolTip(text)
+        if capture_id == self._latest_notification_id and not self._closing:
+            self.email_status_label.setText(text)
+
+    def poll_email_results(self):
+        while True:
+            try:
+                capture_id, status = self.notifier.results.get_nowait()
+            except Empty:
+                break
+            self.update_email_status(capture_id, status)
+        if self._closing and not self.notifier.is_running():
+            self.notifier.wait()
+            self.ui.close()
 
     # ========================================================
     # 預測
@@ -980,6 +1062,8 @@ class MainWindow:
                 self.status_label.setText(
                     "設定已更新"
                 )
+                if self._latest_notification_id is None:
+                    self.show_email_ready_status()
 
         except Exception as e:
 
@@ -998,23 +1082,24 @@ class MainWindow:
     # 關閉程式
     # ========================================================
 
-    def closeEvent(self, event):
-
-        reply = QMessageBox.question(
-            self,
-            "確認離開",
-            "確定要離開系統嗎？",
-            QMessageBox.Yes |
-            QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-
-            event.accept()
-
-        else:
-
-            event.ignore()
+    def eventFilter(self, watched, event):
+        # QUiLoader 顯示的是 self.ui，必須攔截該物件的關閉事件。
+        if watched is self.ui and event.type() == QEvent.Close:
+            self._closing = True
+            self._capture_timer.stop()
+            self.notifier.shutdown()
+            if self.notifier.is_running():
+                event.ignore()
+                self.btnCapture.setEnabled(False)
+                self.btnSave.setEnabled(False)
+                self.btnSettings.setEnabled(False)
+                self.email_status_label.setText(
+                    "Email：正在關閉，等待目前寄送結束；尚未開始的通知已取消"
+                )
+                return True
+            self.notifier.wait()
+            self._email_timer.stop()
+        return super().eventFilter(watched, event)
 
 
 # ============================================================
@@ -1031,9 +1116,13 @@ def main():
 
     window.ui.show()
 
-    sys.exit(
-        app.exec()
-    )
+    try:
+        exit_code = app.exec()
+    finally:
+        # 保護非視窗關閉路徑（例如 QApplication.quit）。
+        window.notifier.shutdown()
+        window.notifier.wait()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

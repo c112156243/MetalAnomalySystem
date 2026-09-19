@@ -1,0 +1,17 @@
+{
+    "gateway1": "192.168.1.101",
+    "gateway2": "192.168.1.102",
+    "save_path": "data",
+    "account": "recipient@example.com",
+    "device_number": "DEVICE001",
+    "email": {
+        "enabled": false,
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 465,
+        "security": "ssl",
+        "username": "",
+        "sender": "",
+        "password_env": "METAL_SMTP_PASSWORD",
+        "timeout_seconds": 20
+    }
+}
