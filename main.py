@@ -1,10 +1,11 @@
 import sys
 import os
-import csv
 import json
 import random
 from datetime import datetime
 from queue import Empty
+from daq_acquisition import CaptureWorker, AcquisitionError, apply_daq_defaults
+from excel_export import save_capture_excel
 
 from PySide6.QtCore import Qt, QTimer, QObject, QEvent
 from email_notifier import (
@@ -66,13 +67,13 @@ ICON_FILE = os.path.join(
 def load_config():
     """讀取 config.json"""
 
-    default_config = apply_email_defaults({
+    default_config = apply_daq_defaults(apply_email_defaults({
         "gateway1": "192.168.1.101",
         "gateway2": "192.168.1.102",
         "save_path": "data",
         "account": "user@example.com.tw",
         "device_number": "DEVICE001"
-    })
+    }))
 
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config)
@@ -87,7 +88,7 @@ def load_config():
             if key not in config:
                 config[key] = value
 
-        return apply_email_defaults(config)
+        return apply_daq_defaults(apply_email_defaults(config))
 
     except Exception as e:
         print("讀取設定檔失敗:", e)
@@ -523,6 +524,7 @@ class MainWindow(QObject):
 
         if self.status_label is None:
             raise RuntimeError("UI 中找不到 lblStatus")
+        self.status_label.setWordWrap(True)
 
         # 獨立使用既有 QStatusBar，不覆蓋擷取／儲存狀態。
         self.email_status_label = QLabel(self.ui)
@@ -531,6 +533,7 @@ class MainWindow(QObject):
         self.email_status_label.setWordWrap(True)
         self.ui.statusBar().addWidget(self.email_status_label, 1)
         self.notifier = EmailNotifier()
+        self._capture_worker = None
         self._closing = False
         self._capture_id = 0
         self._latest_notification_id = None
@@ -541,8 +544,8 @@ class MainWindow(QObject):
         self._email_timer.timeout.connect(self.poll_email_results)
         self._email_timer.start(100)
         self._capture_timer = QTimer(self)
-        self._capture_timer.setSingleShot(True)
-        self._capture_timer.timeout.connect(self.generate_test_data)
+        self._capture_timer.setInterval(50)
+        self._capture_timer.timeout.connect(self.poll_capture_results)
         self.show_email_ready_status()
 
         # ----------------------------------------------------
@@ -555,7 +558,8 @@ class MainWindow(QObject):
         self.current_score = None
         self.current_prediction = None
 
-        self.last_csv_path = None
+        self.current_capture = None
+        self.last_excel_path = None
 
         # ----------------------------------------------------
         # 初始化 Table
@@ -594,6 +598,7 @@ class MainWindow(QObject):
         self.lblPrediction.setText(
             "預測結果：等待擷取"
         )
+        self.lblPrediction.setToolTip("OK／NG 仍為隨機測試判定，尚未串接 AI 模型；NG 依設定寄信。")
 
         self.update_gateway_display()
 
@@ -674,12 +679,17 @@ class MainWindow(QObject):
 
     def capture_data(self):
 
-        if self._closing:
+        if self._closing or self._capture_worker is not None:
+            return
+        try:
+            worker = CaptureWorker(self.config.get("daq", {}))
+        except AcquisitionError as error:
+            self.capture_failed(str(error))
             return
         self._latest_notification_id = None
         self.email_status_label.setText("Email：擷取中，等待本次結果（先前通知狀態請查看歷史列提示）")
         self.status_label.setText(
-            "進行中：正在擷取 Voltage / Current..."
+            f"進行中：正在擷取 {worker.settings['channel']} 電壓..."
         )
 
         # ----------------------------------------------------
@@ -698,38 +708,55 @@ class MainWindow(QObject):
         )
 
         self.btnCapture.setEnabled(False)
+        self.btnSave.setEnabled(False)
+        self.btnSettings.setEnabled(False)
 
         # ----------------------------------------------------
-        # 使用 Timer 模擬設備擷取
+        # 背景執行緒操作 DAQ；Timer 僅接收結果並更新 UI。
         # ----------------------------------------------------
 
-        self._capture_timer.start(1000)
+        self._capture_worker = worker
+        try:
+            worker.start()
+        except Exception:
+            self._capture_worker = None
+            self.capture_failed("無法啟動擷取工作，請重試。")
+            return
+        self._capture_timer.start()
 
-    # ========================================================
-    # 產生測試資料
-    # ========================================================
+    def poll_capture_results(self):
+        worker = self._capture_worker
+        if worker is None or worker.is_running():
+            return
+        worker.wait()
+        result, error = worker.results.get_nowait()
+        self._capture_worker = None
+        self._capture_timer.stop()
+        if self._closing:
+            return
+        if error:
+            self.capture_failed(error)
+        elif result is not None:
+            self.complete_capture(result)
 
-    def generate_test_data(self):
+    def capture_failed(self, reason):
+        self._latest_notification_id = None
+        previous = "；保留上一批成功資料" if self.current_voltage else ""
+        self.status_label.setText(f"擷取失敗：{reason}{previous}")
+        self.status_label.setStyleSheet("color: #a00000;")
+        self.email_status_label.setText("Email：本次擷取失敗，不產生新通知")
+        self.btnCapture.setEnabled(True)
+        self.btnSave.setEnabled(True)
+        self.btnSettings.setEnabled(True)
+        self.set_action_button_running(self.btnCapture, False)
+
+    def complete_capture(self, result):
 
         if self._closing:
             return
-        # ----------------------------------------------------
-        # 模擬 1000 筆 Voltage
-        # ----------------------------------------------------
-
-        self.current_voltage = [
-            random.uniform(4.8, 5.2)
-            for _ in range(1000)
-        ]
-
-        # ----------------------------------------------------
-        # 模擬 1000 筆 Current
-        # ----------------------------------------------------
-
-        self.current_current = [
-            random.uniform(0.8, 1.2)
-            for _ in range(1000)
-        ]
+        self.current_capture = result
+        self.current_voltage = list(result.voltage)
+        self.current_current = [None] * len(result.voltage)
 
         # ----------------------------------------------------
         # 進行預測
@@ -741,7 +768,7 @@ class MainWindow(QObject):
 
         self.current_score = score
         self.current_prediction = prediction
-        completed_at = datetime.now()
+        completed_at = result.completed_at
 
         # ----------------------------------------------------
         # 更新畫面
@@ -792,7 +819,8 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self.status_label.setText(
-            "擷取完成"
+            f"擷取完成：{result.channel}，{len(result.voltage)} 筆，"
+            f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流未量測，OK／NG 為隨機測試"
         )
 
         self.status_label.setStyleSheet(
@@ -800,6 +828,8 @@ class MainWindow(QObject):
         )
 
         self.btnCapture.setEnabled(True)
+        self.btnSave.setEnabled(True)
+        self.btnSettings.setEnabled(True)
 
         self.set_action_button_running(
             self.btnCapture,
@@ -862,7 +892,8 @@ class MainWindow(QObject):
             except Empty:
                 break
             self.update_email_status(capture_id, status)
-        if self._closing and not self.notifier.is_running():
+        if (self._closing and not self.notifier.is_running()
+                and self._capture_worker is None):
             self.notifier.wait()
             self.ui.close()
 
@@ -962,134 +993,44 @@ class MainWindow(QObject):
             )
 
     # ========================================================
-    # 儲存 CSV
+    # 儲存 Excel
     # ========================================================
 
     def save_data(self):
-
-        if not self.current_voltage:
-
+        if self._closing or self._capture_worker is not None:
+            return
+        if self.current_capture is None:
             show_message_box(
-                self.ui,
-                QMessageBox.Icon.Warning,
-                "無資料",
-                "目前沒有可儲存的擷取資料。\n"
-                "請先按「擷取」。"
+                self.ui, QMessageBox.Icon.Warning, "無資料",
+                "目前沒有可儲存的擷取資料。\n請先按「擷取」。"
             )
-
             return
 
-        # ----------------------------------------------------
-        # 儲存執行中：按鈕變色
-        # ----------------------------------------------------
-
-        self.set_action_button_running(
-            self.btnSave,
-            True
-        )
+        self.set_action_button_running(self.btnSave, True)
         self.btnSave.setEnabled(False)
-        self.status_label.setText("進行中：正在儲存資料...")
-        QApplication.processEvents()
-
-        # ----------------------------------------------------
-        # 確認今天資料夾
-        # ----------------------------------------------------
-
-        self.today_folder = create_today_folder(
-            self.config["save_path"]
-        )
-
-        # ----------------------------------------------------
-        # CSV 檔名
-        # ----------------------------------------------------
-
-        now = datetime.now()
-
-        filename = (
-            now.strftime(
-                "%Y%m%d_%H%M%S"
-            )
-            + "_001.csv"
-        )
-
-        filepath = os.path.join(
-            self.today_folder,
-            filename
-        )
-
-        # ----------------------------------------------------
-        # 寫入 CSV
-        # ----------------------------------------------------
-
+        self.status_label.setText("進行中：正在儲存 Excel...")
+        self.status_label.setStyleSheet("")
         try:
-
-            with open(
-                filepath,
-                "w",
-                newline="",
-                encoding="utf-8-sig"
-            ) as f:
-
-                writer = csv.writer(f)
-
-                # Header
-                writer.writerow(
-                    [
-                        "Timestamp",
-                        "Voltage",
-                        "Current",
-                        "Score",
-                        "Prediction"
-                    ]
-                )
-
-                timestamp = now.strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-
-                for voltage, current in zip(
-                    self.current_voltage,
-                    self.current_current
-                ):
-
-                    writer.writerow(
-                        [
-                            timestamp,
-                            voltage,
-                            current,
-                            self.current_score,
-                            self.current_prediction
-                        ]
-                    )
-
-            self.last_csv_path = filepath
-
-            self.status_label.setText(
-                "資料儲存完成"
+            self.today_folder = create_today_folder(self.config["save_path"])
+            filepath = save_capture_excel(
+                self.today_folder, self.current_capture,
+                self.current_score, self.current_prediction, datetime.now(),
             )
-
+            self.last_excel_path = filepath
+            self.status_label.setText("Excel 資料儲存完成")
             show_message_box(
-                self.ui,
-                QMessageBox.Icon.Information,
-                "儲存成功",
+                self.ui, QMessageBox.Icon.Information, "儲存成功",
                 f"資料已儲存：\n\n{filepath}"
             )
-
-        except Exception as e:
-
+        except Exception as error:
+            self.status_label.setText("Excel 儲存失敗，擷取資料仍保留，可重新儲存")
             show_message_box(
-                self.ui,
-                QMessageBox.Icon.Critical,
-                "儲存失敗",
-                f"CSV 儲存失敗：\n{e}"
+                self.ui, QMessageBox.Icon.Critical, "儲存失敗",
+                f"Excel 儲存失敗：\n{error}"
             )
-
         finally:
-            self.btnSave.setEnabled(True)
-            self.set_action_button_running(
-                self.btnSave,
-                False
-            )
+            self.btnSave.setEnabled(not self._closing)
+            self.set_action_button_running(self.btnSave, False)
 
     # ========================================================
     # 帳號設定
@@ -1152,9 +1093,10 @@ class MainWindow(QObject):
         # QUiLoader 顯示的是 self.ui，必須攔截該物件的關閉事件。
         if watched is self.ui and event.type() == QEvent.Close:
             self._closing = True
-            self._capture_timer.stop()
+            if self._capture_worker is not None:
+                self._capture_worker.shutdown()
             self.notifier.shutdown()
-            if self.notifier.is_running():
+            if self.notifier.is_running() or self._capture_worker is not None:
                 event.ignore()
                 self.btnCapture.setEnabled(False)
                 self.btnSave.setEnabled(False)
@@ -1162,6 +1104,7 @@ class MainWindow(QObject):
                 self.email_status_label.setText(
                     "Email：正在關閉，等待目前寄送結束；尚未開始的通知已取消"
                 )
+                self.status_label.setText("正在關閉，等待擷取工作釋放裝置...")
                 return True
             self.notifier.wait()
             self._email_timer.stop()
@@ -1187,6 +1130,9 @@ def main():
     finally:
         # 保護非視窗關閉路徑（例如 QApplication.quit）。
         window.notifier.shutdown()
+        if window._capture_worker is not None:
+            window._capture_worker.shutdown()
+            window._capture_worker.wait()
         window.notifier.wait()
     sys.exit(exit_code)
 

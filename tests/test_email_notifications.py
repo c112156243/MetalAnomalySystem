@@ -1,6 +1,5 @@
 """真實 PySide6 事件迴圈 + mock SMTP；不連線、不使用真實認證。"""
 
-import csv
 import json
 import os
 import secrets
@@ -14,6 +13,7 @@ from datetime import datetime
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
+from openpyxl import load_workbook
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,6 +22,7 @@ from PySide6.QtCore import QTimer, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 import main
+import daq_acquisition as daq
 import email_notifier as mail
 
 
@@ -45,9 +46,8 @@ class EmailTests(unittest.TestCase):
                                       sender="sender@example.com")
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
         self.patch(main, "CONFIG_FILE", str(self.config_path))
-        self.patch(main.QMessageBox, "information")
-        self.patch(main.QMessageBox, "warning")
-        self.patch(main.QMessageBox, "critical")
+        self.patch(main, "show_message_box")
+        self.daq_read = self.patch(daq, "acquire_voltage", return_value=self.sample_capture())
         self.env = patch.dict(os.environ, {"METAL_SMTP_PASSWORD": secrets.token_urlsafe(24)})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -66,6 +66,10 @@ class EmailTests(unittest.TestCase):
         return value
 
     def close_window(self):
+        if self.window._capture_worker is not None:
+            self.window._capture_worker.shutdown()
+            self.window._capture_worker.wait()
+            self.window.poll_capture_results()
         self.window.notifier.shutdown()
         self.window.notifier.wait()
         self.window.ui.close()
@@ -80,14 +84,16 @@ class EmailTests(unittest.TestCase):
             time.sleep(0.005)
         self.fail("等待 Qt／背景寄送狀態逾時")
 
+    def sample_capture(self, when=None):
+        return daq.CaptureResult(
+            tuple(index / 1000 for index in range(1000)),
+            "Dev1/ai0", 1000.0, "DIFF", -10.0, 10.0,
+            "USB-6211", False, when or datetime(2026, 9, 24, 12, 0),
+        )
+
     def capture(self, score=0.12, prediction="NG", when=None):
         with patch.object(self.window, "predict", return_value=(score, prediction)):
-            if when is None:
-                self.window.generate_test_data()
-            else:
-                with patch.object(main, "datetime") as clock:
-                    clock.now.return_value = when
-                    self.window.generate_test_data()
+            self.window.complete_capture(self.sample_capture(when))
 
     def finished(self, text="已交給郵件伺服器"):
         self.until(lambda: text in self.window.email_status_label.text())
@@ -124,17 +130,24 @@ class EmailTests(unittest.TestCase):
         self.assertIs(worker, self.window.notifier._thread)
         self.assertEqual(self.window.tableHistory.rowCount(), 2)
 
-    def test_save_csv_and_add_history_do_not_send(self):
+    def test_save_excel_and_add_history_do_not_send(self):
         self.capture()
         self.finished()
         self.window.save_data()
         self.window.add_history()
         self.assertEqual(self.client.send_message.call_count, 1)
-        with open(self.window.last_csv_path, encoding="utf-8-sig", newline="") as stream:
-            rows = list(csv.reader(stream))
-        self.assertEqual(len(rows), 1001)
-        self.assertEqual(rows[0], ["Timestamp", "Voltage", "Current", "Score", "Prediction"])
-        self.assertEqual(rows[1][-2:], ["0.12", "NG"])
+        workbook = load_workbook(self.window.last_excel_path)
+        try:
+            rows = list(workbook["擷取資料"].values)
+            self.assertEqual(len(rows), 1001)
+            self.assertEqual(list(rows[0]), ["Timestamp", "Voltage", "Current", "Score", "Prediction"])
+            self.assertEqual(rows[1][-2:], (0.12, "NG"))
+            self.assertIsInstance(rows[1][0], datetime)
+            self.assertEqual([row[1] for row in rows[1:]], self.window.current_voltage)
+            self.assertTrue(all(row[2] is None for row in rows[1:]))
+            self.assertIn("尚未串接 AI", workbook["擷取設定"]["B14"].value)
+        finally:
+            workbook.close()
 
     def test_settings_dialog_save_reload_next_recipient(self):
         self.capture()
@@ -259,7 +272,7 @@ class EmailTests(unittest.TestCase):
             self.assertIn("密碼環境變數", self.window.email_status_label.text())
         self.ssl_factory.assert_not_called()
 
-    def test_smtp_failures_do_not_lose_history_or_csv_and_never_retry(self):
+    def test_smtp_failures_do_not_lose_history_or_excel_and_never_retry(self):
         errors = [smtplib.SMTPAuthenticationError(535, b"redacted"), TimeoutError(),
                   smtplib.SMTPRecipientsRefused({}), ConnectionRefusedError(),
                   ssl.SSLError(), smtplib.SMTPDataError(554, b"redacted"), RuntimeError()]
@@ -272,7 +285,7 @@ class EmailTests(unittest.TestCase):
                 self.assertEqual(self.window.tableHistory.rowCount(), index + 1)
                 self.assertEqual(self.window.current_prediction, "NG")
                 self.window.save_data()
-                self.assertTrue(Path(self.window.last_csv_path).exists())
+                self.assertTrue(Path(self.window.last_excel_path).exists())
         self.assertEqual(self.client.login.call_count, len(errors))
 
     def test_refused_recipient_return_and_cleanup_after_acceptance(self):
@@ -351,7 +364,7 @@ class EmailTests(unittest.TestCase):
         self.assertEqual(self.client.send_message.call_count, 1)
         self.assertFalse(any("Destroyed while" in message or "still running" in message for message in warnings))
 
-    def test_real_capture_timer_and_close_during_capture(self):
+    def test_capture_button_worker_and_close_during_capture(self):
         with patch.object(self.window, "predict", return_value=(0.1, "NG")):
             self.window.btnCapture.click()
             self.assertFalse(self.window.btnCapture.isEnabled())
@@ -380,6 +393,106 @@ class EmailTests(unittest.TestCase):
         self.assertIn("佇列已滿", self.window.email_status_label.text())
         self.window.notifier.shutdown()
         release.set()
+
+    def test_daq_failure_keeps_previous_batch_without_prediction_or_email(self):
+        self.capture()
+        self.finished()
+        previous = self.window.current_capture
+        self.daq_read.side_effect = daq.AcquisitionError("NI-DAQmx 錯誤 -50103：設備被占用")
+        with patch.object(self.window, "predict") as predict:
+            self.window.btnCapture.click()
+            self.until(lambda: self.window._capture_worker is None)
+            predict.assert_not_called()
+        self.assertIs(self.window.current_capture, previous)
+        self.assertIn("保留上一批", self.window.status_label.text())
+        self.assertEqual(self.window.tableHistory.rowCount(), 1)
+        self.assertEqual(self.client.send_message.call_count, 1)
+        self.assertTrue(self.window.btnCapture.isEnabled())
+        self.assertTrue(self.window.btnSave.isEnabled())
+        self.assertTrue(self.window.btnSettings.isEnabled())
+        self.daq_read.side_effect = None
+        with patch.object(self.window, "predict", return_value=(0.8, "OK")):
+            self.window.btnCapture.click()
+            self.until(lambda: self.window.tableHistory.rowCount() == 2)
+        self.assertEqual(self.client.send_message.call_count, 1)
+
+    def test_close_slow_capture_cancels_without_late_result_or_mail(self):
+        started = threading.Event()
+        ticks = []
+        seen_threads = []
+
+        def delayed(settings, cancel):
+            seen_threads.append(threading.get_ident())
+            started.set()
+            cancel.wait(3)
+            # 模擬取消與完成競爭：即使回傳成功，也不能在關窗後判定／寄信。
+            return self.sample_capture()
+
+        self.daq_read.side_effect = delayed
+        self.window.btnCapture.click()
+        self.until(started.is_set)
+        self.window.capture_data()
+        self.assertEqual(self.daq_read.call_count, 1)
+        self.assertFalse(self.window.btnSave.isEnabled())
+        self.assertFalse(self.window.btnSettings.isEnabled())
+        QTimer.singleShot(0, lambda: ticks.append(True))
+        self.until(lambda: bool(ticks))
+        self.window.ui.close()
+        self.until(lambda: not self.window.ui.isVisible())
+        self.assertIsNone(self.window._capture_worker)
+        self.assertEqual(self.window.tableHistory.rowCount(), 0)
+        self.ssl_factory.assert_not_called()
+        self.assertNotEqual(seen_threads[0], threading.get_ident())
+
+    def test_invalid_daq_config_no_read_and_legacy_defaults_preserved(self):
+        self.assertEqual(self.window.config["daq"], daq.DAQ_DEFAULTS)
+        self.window.config["daq"]["sample_rate"] = 0
+        self.window.btnCapture.click()
+        self.daq_read.assert_not_called()
+        self.assertIn("擷取失敗", self.window.status_label.text())
+        self.ssl_factory.assert_not_called()
+        partial = daq.apply_daq_defaults({"daq": {"channel": "Dev2/ai1", "custom": 42}})
+        self.assertEqual(partial["daq"]["channel"], "Dev2/ai1")
+        self.assertEqual(partial["daq"]["custom"], 42)
+        self.assertEqual(partial["daq"]["sample_rate"], 1000)
+
+    def test_excel_repeat_save_uses_unique_paths_and_same_capture_metadata(self):
+        self.capture(0.8, "OK")
+        with patch.object(main, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 24, 15, 0)
+            self.window.save_data()
+            first = Path(self.window.last_excel_path)
+            initial_bytes = first.read_bytes()
+            self.window.config["daq"]["channel"] = "Dev2/ai1"
+            self.window.save_data()
+            second = Path(self.window.last_excel_path)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.read_bytes(), initial_bytes)
+        self.assertTrue(second.name.endswith("_002.xlsx"))
+        workbook = load_workbook(second)
+        try:
+            self.assertEqual(workbook["擷取設定"]["B2"].value, "Dev1/ai0")
+            self.assertEqual(workbook["擷取設定"]["B8"].value, 1000)
+        finally:
+            workbook.close()
+        self.ssl_factory.assert_not_called()
+
+    def test_excel_save_failure_keeps_data_and_restores_button(self):
+        self.capture(0.8, "OK")
+        previous = self.window.current_capture
+        for target in ("create_today_folder", "save_capture_excel"):
+            with self.subTest(target=target):
+                with patch.object(main, target, side_effect=PermissionError("test")):
+                    self.window.save_data()
+                self.assertIn("儲存失敗", self.window.status_label.text())
+                self.assertIs(self.window.current_capture, previous)
+                self.assertTrue(self.window.btnSave.isEnabled())
+        self.assertIsNone(self.window.last_excel_path)
+
+    def test_save_without_capture_does_not_create_file(self):
+        self.window.save_data()
+        self.assertIsNone(self.window.last_excel_path)
+        self.assertEqual(list(Path(self.temp.name).rglob("*.xlsx")), [])
 
     def test_logs_do_not_include_exception_payload_or_secret(self):
         payload = os.environ["METAL_SMTP_PASSWORD"]

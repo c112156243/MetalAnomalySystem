@@ -1,180 +1,177 @@
 # 金屬製造異常警示通報系統
 
-本專案是一個以 Python 與 PySide6 開發的繁體中文桌面應用程式，用於金屬製造異常監測的操作流程展示與後續整合開發。目標流程為：取得電壓／電流資料、進行模型判定、顯示 OK／NG、儲存資料，並在 NG 時通知指定人員。
+本專案為 Python／PySide6 Windows 桌面應用程式。**按「擷取」會透過 NI-DAQmx 讀取裝置電壓，不再隨機生成 Voltage／Current；AI 模型尚未串接，Score 與 OK／NG 仍隨機決定。NG 依既有設定寄送 Email，按「儲存」輸出真正的 Excel `.xlsx`。**
 
-**目前是模擬擷取與模擬預測版本。畫面上的結果不是來自真實設備或已訓練模型；NG Email 通知已實作，交付時預設停用。啟用後，隨機模擬產生的 NG 也會寄信。**
-
-本文依 2026-09-17 讀取的 `main.py`、`config.json`、`ui/main_window.ui`、`requirements.txt` 與本機虛擬環境資訊整理。後續若程式變更，請以實際程式為準並同步更新本文。
+本次需求與使用者確認：先使用 `Dev1/ai0`、差動 DIFF、±10 V，以設備硬體時鐘每秒 1000 筆、每次 1000 筆（約 1 秒）；電流未接入，欄位留白。主程式沒有隨機訊號備援；NI MAX 的模擬裝置仍可透過驅動讀取，畫面與 Excel 會標示來源。
 
 ## 1. 功能現況
 
-| 功能 | 狀態 | 說明 |
-| --- | --- | --- |
-| 桌面操作介面 | 已實作 | 顯示閘道位置、分數、預測結果、歷史紀錄及操作狀態 |
-| 擷取按鈕 | 已實作，使用模擬資料 | 約等待 1 秒後產生電壓、電流資料 |
-| OK／NG 判定 | 已實作，使用隨機分數 | 尚未載入模型，分數不由電壓／電流計算 |
-| 歷史紀錄 | 已實作 | 顯示本次執行期間的時間、分數與結果 |
-| CSV 儲存 | 已實作 | 使用者手動儲存目前這一批資料 |
-| 帳號設定視窗 | 已實作 | 修改閘道位置、儲存路徑、帳號及裝置號碼 |
-| 真實設備通訊 | 未實作 | 目前閘道位置僅供設定與顯示 |
-| 1D CNN 推論 | 未實作 | 程式註解記載的未來整合方向 |
-| NG Email 通知 | 已實作，預設停用 | 每次 NG 完成後，背景寄送至當時已載入的 `account`；無 CSV 附件 |
+| 功能 | 行為 |
+| --- | --- |
+| 擷取 | 背景執行緒讀取單一 NI 類比電壓通道，完整成功後才更新資料 |
+| 預測 | `random.uniform(0.0, 1.0)`；分數 >= 0.5 為 OK，否則 NG，尚無 AI 模型 |
+| Email | 成功擷取後每次 NG 各排入一封通知；OK、不成功的擷取、儲存都不寄新信 |
+| Excel | 手動儲存目前這一批資料到 `save_path/YYYY/MM/DD/`，不自動寄附件 |
+| 電流 | `Current` 留白，不填零、不複製電壓、不生成假電流 |
+| 歷史 | 保留本次執行期間的完成時間、分數與結果，重啟不保留 |
+| 設定 | 原帳號／儲存路徑設定保留；DAQ 參數目前由 JSON 設定 |
 
-## 2. 檔案結構
+**隨機 NG 會照常寄信，這是目前刻意保留的測試流程，不代表真實設備異常。** 既有本機 Email 設定不被覆蓋；新設定檔／範本預設停用寄信。
 
-```text
-MetalAnomalySystem/
-├── main.py                 # 程式入口、視窗控制、模擬擷取、預測及 CSV 儲存
-├── email_notifier.py       # 通知快照、SMTP 驗證及單一背景寄信工作者
-├── config.example.json     # 可提交的設定範本，通知預設停用
-├── config.json             # 本機使用者設定（Git 忽略）
-├── requirements.txt        # 專案列出的 Python 套件與版本
-├── README.md               # 專案說明
-├── .gitignore              # 排除虛擬環境、產生的資料、日誌等
-├── ui/
-│   └── main_window.ui      # Qt Designer 主視窗配置
-├── tests/
-│   └── test_email_notifications.py  # PySide6 offscreen + mock SMTP 功能測試
-├── data/                   # 預設資料輸出目錄，執行後可自動建立
-│   └── YYYY/MM/DD/
-│       └── YYYYMMDD_HHMMSS_001.csv
-└── .venv/                  # 本機虛擬環境，其他電腦應重新建立
-```
+## 2. 檔案與責任
 
-設定檔與 UI 檔位置以 `main.py` 所在目錄為基準。`save_path` 若是相對路徑，也相對於該目錄解析；若是絕對路徑，則使用指定位置。
+| 檔案 | 用途 |
+| --- | --- |
+| `main.py` | UI、設定載入、擷取工作生命週期、隨機判定、歷史、儲存按鈕 |
+| `daq_acquisition.py` | DAQ 預設值與驗證、NI-DAQmx 有限取樣、可取消背景工作者 |
+| `excel_export.py` | Excel 資料與設定工作表、日期／數值格式、避免覆蓋舊檔 |
+| `email_notifier.py` | 原有通知快照、SMTP 驗證及背景寄信，這次未改變通知內容 |
+| `config.example.json` | 不含個資的設定範本 |
+| `config.json` | 本機帳號與設備設定，Git 忽略，不可覆寫使用者已有值 |
+| `requirements.txt` | 套件依賴，新增 nidaqmx 及 openpyxl |
+| `ui/main_window.ui` | Qt Designer UI，本次不修改布局與元件名稱 |
+| `tests/test_daq_acquisition.py` | mock NI API，驗證取樣、取消、錯誤與資源釋放 |
+| `tests/test_email_notifications.py` | Qt offscreen UI、Excel 與 mock SMTP 整合測試 |
 
-## 3. 安裝與啟動
+使用者自己的 `nidaqtest.py` 是獨立 On Demand 測試程式，這次不修改；主程式使用硬體時鐘有限取樣，與該程式的逐筆讀取模式不同。
 
-目前開發情境為 Windows。既有 `.venv/pyvenv.cfg` 記錄 Python 3.11.9，但這不代表已確認目前 `requirements.txt` 中所有固定版本都支援 Python 3.11。
+## 3. 安裝、啟動與設備前置確認
 
-在專案根目錄開啟 PowerShell。新環境可依下列流程建立與安裝，使用與依賴版本相容的 Python：
+1. 安裝支援 USB-6211 與作業系統的 **NI-DAQmx 驅動**。Python `nidaqmx` 套件不能取代驅動。
+2. 接上 USB-6211，在 NI MAX 確認 `Dev1`、Self-Test 及 Test Panels 可正常讀取。接線須配合 DIFF，訊號須符合設備量測及共模限制。
+3. 關閉 Test Panels 與其他占用類比輸入的程式。
+4. 在本專案根目錄開啟 PowerShell。既有環境增裝本次依賴：
 
 ```powershell
-python --version
+.\.venv\Scripts\python.exe -m pip install nidaqmx==1.6.0 openpyxl==3.1.5
+.\.venv\Scripts\python.exe main.py
+```
+
+新環境可建立虛擬環境後安裝完整依賴：
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 ```
 
-若 `.venv` 已存在且可用，可直接執行最後一行啟動程式。若安裝失敗，應依錯誤檢查 Python 版本與依賴相容性，不要任意重寫整份依賴清單。
+目前既有環境為 Python 3.11.9／PySide6 6.11.1；本次沒有重新安裝整份 requirements。原清單部分套件的 Python 版本相容性仍須在新機確認，不要為此任意改寫整份依賴。
 
-目前 `main.py` 直接使用 PySide6 與 Python 標準函式庫；`requirements.txt` 另列有 NumPy、pandas、Matplotlib、scikit-learn 等套件，其存在不代表目前已完成繪圖、資料分析或模型推論。
+NI 官方參考：[Python 套件與驅動](https://github.com/ni/nidaqmx-python)、[硬體時鐘有限取樣範例](https://github.com/ni/nidaqmx-python/blob/master/examples/analog_in/voltage_acq_int_clk.py)、[USB-6211 規格](https://download.ni.com/support/manuals/375195d.pdf)。
 
-本次在既有 Python 3.11.9／PySide6 6.11.1 虛擬環境執行 Qt offscreen 功能測試，沒有重新安裝依賴。SMTP 功能僅使用 Python 標準函式庫。
+## 4. 操作流程
 
-## 4. 使用流程
+1. 啟動後確認「帳號設定」的儲存路徑與收件人。若需寄信，依第 9 節完成 SMTP 設定。
+2. 按「擷取」：擷取／儲存／帳號設定按鈕暫停使用，畫面事件仍可處理，可關窗取消。
+3. 約 1 秒資料收齊後，顯示通道、筆數、實體或 NI 模擬裝置，以及隨機 OK／NG。實際等待還包含建立工作及驅動操作時間。
+4. NG 且通知啟用時，自動排入一封背景 Email；OK 不寄信。
+5. 按「儲存」：輸出本次資料 `.xlsx`，顯示完整檔案路徑；不再寄信。
+6. 再次擷取成功會取代目前這批資料；歷史列只保留摘要。
 
-1. 啟動程式，讀取設定並建立當日資料目錄。
-2. 按「帳號設定」，填寫閘道位置、儲存路徑、帳號與裝置號碼，再儲存變更。
-3. 按「擷取」，等待約 1 秒，程式產生模擬資料並更新分數與 OK／NG 結果。
-4. 擷取結果加入畫面上的歷史紀錄；若為 NG 且通知已啟用，立即排入一封背景通知。
-5. 如需保留原始資料，按「儲存」輸出目前這一批 CSV。
-6. 按「離開」關閉主視窗。
-
-每次擷取會取代記憶體中的目前電壓、電流與預測結果。歷史表格保留摘要，但目前沒有持久化或重新載入歷史紀錄的功能。
+擷取失敗時顯示原因、恢復按鈕，保留上一批成功資料／分數／結果，畫面會註明保留上一批；不新增歷史、不執行隨機判定、不寄新信。這時按儲存會儲存上一批成功資料。尚無成功資料時，儲存顯示無資料提示。既有已排入的 Email 不因新一次擷取失敗而取消。
 
 ## 5. 設定檔
 
-從儲存庫初次取得程式時，複製 `config.example.json` 為 `config.json` 再填寫本機設定；若不複製，程式也會自動建立預設停用通知的設定。已有 `config.json` 時請勿覆蓋。實際設定含個人信箱，因此不再納入 Git；只提交不含個資的範本。
+首次取得專案時可複製 `config.example.json` 為 `config.json`；已有檔案時不可覆蓋。不複製也可啟動，由程式建立預設停用寄信的設定。
 
-以下為格式範例，實際值請依使用環境填寫：
+設定檔、UI 檔的位置以 `main.py` 所在目錄為基準。`save_path` 的相對路徑也相對於專案根目錄；絕對路徑則直接使用。
+
+保留原有 `gateway1`、`gateway2`、`save_path`、`account`、`device_number`、`email`，新增：
 
 ```json
-{
-    "gateway1": "192.168.1.101",
-    "gateway2": "192.168.1.102",
-    "save_path": "data",
-    "account": "recipient@example.com",
-    "device_number": "DEVICE001"
+"daq": {
+    "channel": "Dev1/ai0",
+    "terminal_config": "DIFF",
+    "min_voltage": -10.0,
+    "max_voltage": 10.0,
+    "sample_rate": 1000.0,
+    "samples_per_channel": 1000
 }
 ```
 
-| 欄位 | 用途 | 目前行為 |
-| --- | --- | --- |
-| `gateway1` | 第一個閘道位置 | 顯示於電壓區塊，尚未建立設備連線 |
-| `gateway2` | 第二個閘道位置 | 顯示於電流區塊，尚未建立設備連線 |
-| `save_path` | CSV 儲存根目錄 | 自動依年／月／日建立子目錄 |
-| `account` | NG 通知收件地址 | 使用當次已載入的值並去除頭尾空白；不是 SMTP 登入帳號 |
-| `device_number` | 裝置識別碼 | 目前可編輯與儲存；現有 CSV 未包含此欄位 |
+| 欄位 | 意義與限制 |
+| --- | --- |
+| `channel` | 單一 AI 通道，預設 Dev1/ai0；裝置名稱依 NI MAX。不可填通道範圍／多通道清單 |
+| `terminal_config` | DIFF、RSE 或 NRSE，必須與實際接線相符 |
+| `min_voltage` / `max_voltage` | 請求的電壓範圍；須在 -10～10 V 內且下限小於上限；實際支援由驅動判定 |
+| `sample_rate` | 每秒樣本數，大於 0 且 <= 250000；Excel 記錄驅動回報的實際取樣率 |
+| `samples_per_channel` | 每次總樣本數，2～100000 整數；本版限制單次資料長度 <= 60 秒 |
 
-`load_config()` 在設定檔不存在時建立預設設定；讀取成功後會補上缺少的頂層欄位及 `email` 中每個缺少的欄位，保留已有值及其他欄位。新增的預設值先存在記憶體，帳號設定儲存時會一併寫入。讀取發生例外時，會在終端機顯示錯誤並使用預設設定。完整 Email 欄位見第 9 節。
+`load_config()` 為缺少的 daq／email 欄位補預設值，保留原設定及未知欄位。新增預設值先存在記憶體，帳號設定儲存時才一併寫回；本次開發不修改本機 `config.json`。不合法設定會在擷取時明確失敗，不會改用隨機訊號。
 
-透過設定視窗儲存後，主視窗會重新讀取設定。直接從外部編輯 JSON 不會自動觸發即時重載，通常需重啟程式。
+直接修改 JSON 後重新啟動程式。`gateway1`／`gateway2` 仍僅為原介面顯示，不用來連接 USB DAQ；`device_number` 為通知中的業務裝置識別碼，不等於 NI MAX 的 `Dev1`。
 
-## 6. 擷取與預測邏輯
-
-目前流程如下：
+## 6. 擷取、預測與關閉邏輯
 
 ```text
-按下「擷取」
-    → capture_data()
-    → 單次 _capture_timer.start(1000)，完成後呼叫 generate_test_data()
-    → 產生電壓、電流各 1000 筆
-    → predict() 產生隨機分數並判定 OK／NG
-    → 更新目前資料、畫面及歷史紀錄
-    → NG 且啟用通知：建立本次快照並排入背景寄信
-    → 等待使用者按「儲存」
+btnCapture → capture_data()
+  → CaptureWorker（凍結本次設定）
+  → 建立 NI Task，設定 AI 通道及 FINITE 硬體時鐘
+  → 分段 read，收齊全部樣本，釋放 Task
+  → poll_capture_results() 在 Qt 主執行緒接收結果
+  → complete_capture() 保留電壓資料與本次設備資訊
+  → predict() 隨機分數及 OK／NG
+  → 更新畫面／歷史，NG 依設定排入 Email
+btnSave → save_data() → save_capture_excel()
 ```
 
-- Voltage 模擬範圍：4.8～5.2。
-- Current 模擬範圍：0.8～1.2。
-- Score 模擬範圍：0.0～1.0。
-- `score >= 0.5` 判為 `OK`，否則判為 `NG`。
-- 分數與模擬訊號彼此獨立，不應將此隨機分數解讀為正式模型的異常機率。
-- OK 顯示綠色背景，NG 顯示紅色背景。
+- NI 設備操作都在同一條非 daemon 背景執行緒，不在 GUI 執行 `task.read()`。
+- QTimer 每 50 ms 檢查工作完成；它不是取樣時鐘。
+- 以約 0.1 秒資料為單位分段讀取，最後一段收剩餘筆數；各次 read 的 timeout 為該段時間 + 2 秒。
+- 樣本不足或非有限數值視為整批失敗，不採用部分資料，不自動重試。
+- 關窗設定取消旗標，下一次分段讀取前／完成後檢查；等待工作者離開 `with nidaqmx.Task()` 釋放裝置。Qt 事件迴圈保持運作，取消的資料不判定、不寄信。
+- 驅動初始化、裝置查詢等仍可能受驅動影響，read timeout 並非關閉總時間保證；不強制終止執行緒。
+- 等待擷取及正在寄送的 Email 均完成清理後才關窗。`QApplication.quit()` 替代路徑也會取消並 join。
+- `predict()` 保留原來 >= 0.5 判 OK 的規則；訊號完全不參與分數計算。未來 AI 的前處理、模型輸入、分數意義與閾值仍未定義。
 
-未來預計整合 `Voltage + Current → preprocessing → 1DCNN → probability → OK / NG`。目前尚未定義正式的模型檔、輸入形狀、前處理參數、機率意義或判定閾值，不能直接假設正式模型沿用模擬版的分數方向。
+## 7. Excel 輸出
 
-## 7. CSV 輸出
+檔案範例：`data/2026/09/24/20260924_150000_001.xlsx`。同秒再次儲存依序使用 `_002`、`_003`，以獨占建立檔案避免覆蓋既有檔案。失敗保留記憶體資料供重試。
 
-輸出路徑範例：
-
-```text
-data/2026/09/17/20260917_143025_001.csv
-```
-
-使用 `utf-8-sig` 編碼，欄位如下：
+工作表「擷取資料」保留原來五個欄位；預設 1000 筆資料加 1 列標題：
 
 | 欄位 | 內容 |
 | --- | --- |
-| `Timestamp` | 按下儲存時的時間，格式為 `YYYY-MM-DD HH:MM:SS` |
-| `Voltage` | 該筆電壓值 |
-| `Current` | 該筆電流值 |
-| `Score` | 該批擷取的分數 |
-| `Prediction` | 該批擷取的 OK／NG 結果 |
+| `Timestamp` | 儲存時間，Excel 日期型別；不是逐筆取樣時間 |
+| `Voltage` | NI-DAQmx 回傳的原始電壓數值，單位 V；顯示六位小數，保留底層精度 |
+| `Current` | 空白儲存格；本版沒有量測電流 |
+| `Score` | 本批隨機分數，數值型別 |
+| `Prediction` | 本批隨機 OK／NG |
 
-目前每次模擬擷取儲存後，CSV 會有一列標題及 1000 列資料。同一批資料共用儲存時間、分數及判定；`Timestamp` 不是每個樣本各自的採樣時間，也不一定等於擷取完成時間。
+工作表「擷取設定」包含本次通道、裝置型號、實體／模擬來源、端點模式、請求量測範圍、實際取樣率、樣本數、擷取完成時間與儲存時間，也標示電流未量測、尚無 AI 模型。這些資料來自擷取結果快照，之後更改設定不會改寫舊批次來源。
 
-檔名尾碼目前固定為 `_001`，不是自動遞增編號。同一秒內若寫入相同檔名，現有寫入方式可能覆蓋舊檔。
+檔案有標題格式、欄寬、凍結標題及資料篩選，不需要安裝 Excel 即可產生檔案。原 CSV 不刪除、不轉換；新按鈕流程僅輸出 `.xlsx`，不是將 CSV 改副檔名。
 
-## 8. 程式維護入口
+## 8. 錯誤排除與驗證
 
-| 位置 | 職責 |
+| 情況 | 處理 |
 | --- | --- |
-| `load_config()` / `save_config()` | 讀寫 JSON 設定 |
-| `create_today_folder()` | 解析儲存路徑並建立當日目錄 |
-| `SettingsDialog` | 建立與儲存設定視窗 |
-| `MainWindow.__init__()` | 載入 UI、設定、元件與事件連線 |
-| `capture_data()` | 開始模擬擷取及更新執行中狀態 |
-| `generate_test_data()` | 產生資料、取得預測、更新畫面與歷史 |
-| `predict()` | 目前為隨機判定，未來模型整合入口 |
-| `add_history()` | 加入歷史摘要 |
-| `save_data()` | 儲存目前這一批 CSV |
-| `open_settings()` | 開啟設定視窗並套用已儲存設定 |
-| `main()` | 建立 QApplication 並啟動事件迴圈 |
+| 缺 nidaqmx／NI-DAQmx | 依第 3 節安裝 Python 套件及設備驅動 |
+| -50103 資源占用 | 關閉 NI MAX Test Panels 或其他正在使用 AI 的程式 |
+| -200220 裝置名稱錯誤 | 檢查 USB 與 NI MAX 的裝置名稱 |
+| -200170 通道錯誤 | 檢查 `daq.channel` 與設備支援通道 |
+| -200284 讀取逾時 | 檢查裝置狀態、取樣設定及接線；本批不採用 |
+| 儲存失敗 | 確認 save_path 權限、磁碟空間及 openpyxl 已安裝，再按儲存 |
 
-UI 使用 `QUiLoader` 在執行時載入 `.ui` 檔。重要元件名稱包括 `btnCapture`、`btnSave`、`btnSettings`、`btnExit`、`lblScore`、`lblPrediction`、`lblStatus`、`lblGateway1`、`lblGateway2` 及 `tableHistory`。修改名稱時必須同步調整 Python 中的查找與引用。
+自動測試（不接觸實體硬體，不寄出真實郵件）：
 
-**關閉事件：** `MainWindow` 現在繼承 `QObject`，透過 `self.ui.installEventFilter(self)` 攔截實際顯示視窗的關閉事件。「離開」、標題列關閉都走相同流程；不依賴外層 Python 類別的 `closeEvent()`。策略詳見第 9 節。
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+git diff --check
+```
+
+NI I/O Trace 可在啟動擷取前開始記錄 NI-DAQmx 呼叫，確認通道、FINITE 時序、Read 成功及 ClearTask。通訊成功不等於量測準確，需以已知且符合設備範圍的訊號對照；NI 模擬裝置測試也不能取代實體驗證。
+
+人工驗收：按一次擷取確認 1000 筆、分數與歷史；NG 依既有 Email 設定確認收信；按儲存檢查日期目錄與兩張 Excel 工作表、Current 留白；測試未接設備／被占用提示、擷取中關閉、同秒重複儲存。原生 Windows 顯示、真實 SMTP 及 Excel 桌面開啟需另行實測。
 
 ## 9. NG Email 通知與設定教學
 
 ### 觸發與畫面狀態
 
-`generate_test_data()` 取得分數及結果後，記錄本次完成時間，先保留擷取結果與歷史，再呼叫 `notify_capture_completed()`。只有 NG 且啟用通知才排入背景工作；每次 NG 各一封，不比較前一次結果。儲存 CSV、更新歷史與帳號設定都不寄信。
+`complete_capture()` 取得分數及結果後，沿用擷取工作者記錄的完成時間，先保留擷取結果與歷史，再呼叫 `notify_capture_completed()`。只有 NG 且啟用通知才排入背景工作；每次 NG 各一封，不比較前一次結果。儲存 Excel、更新歷史與帳號設定都不寄信。
 
 - 收件人、裝置號碼、完成時間、分數、結果及寄件設定都是當次不可變快照；工作者不讀取 `current_score` 或 `current_prediction`。密碼只在執行時從快照所指定的環境變數取得，不放進快照或設定檔。
-- 繁體中文主旨與內文使用 UTF-8；分數兩位小數、擷取時間 `YYYY-MM-DD HH:MM`；沒有 CSV 附件。
+- 繁體中文主旨與內文使用 UTF-8；分數兩位小數、擷取時間 `YYYY-MM-DD HH:MM`；沒有附件。
 - 在既有底部 `QStatusBar` 加入獨立 Email 文字，不修改 `.ui` 配置，也不覆蓋 `lblStatus` 的擷取／儲存狀態。
 - 顯示未啟用、等待寄送、寄送中、已交給郵件伺服器、設定錯誤或寄送失敗。最新擷取以編號與完成時間標記；較舊通知的結果只更新對應歷史列「預測結果」儲存格的滑鼠提示，不冒充最新結果。
 - 「已交給郵件伺服器」僅代表 SMTP 接受，不能保證進入收件匣。關窗後歷史及通知狀態不持久化。
@@ -243,10 +240,10 @@ Remove-Variable smtpSecret, smtpCredential
 1. 先設定自己可查看的收件地址 `account`，填好寄件 `username`、`sender`、SMTP 設定及密碼環境變數。
 2. 將 `email.enabled` 改為 `true`，儲存 JSON，從已取得環境變數的終端機啟動本系統。
 3. 按一次「擷取」。若為 OK 就不寄信，可再按一次；**首次出現 NG 後停止繼續擷取**，等待底部 Email 狀態變為「已交給郵件伺服器」或可理解的錯誤原因。
-4. 到收件匣及垃圾郵件匣確認主旨、裝置號碼、該次擷取時間、兩位小數分數及 NG；郵件不含 CSV。可按「儲存」確認不會再次寄送。
+4. 到收件匣及垃圾郵件匣確認主旨、裝置號碼、該次擷取時間、兩位小數分數及 NG；郵件不含附件。可按「儲存」確認不會再次寄送。
 5. 測試後若尚不準備持續寄信，將 enabled 改回 false 並重啟系統。不要在狀態尚不明時反覆觸發 NG，因為每次新擷取都是獨立通知。
 
-**`predict()` 目前仍使用隨機測試資料，通知啟用後所有模擬 NG 都會寄信，不代表真實設備異常。**
+**`predict()` 目前仍產生隨機分數與判定，通知啟用後所有模擬 NG 都會寄信，不代表真實設備異常。**
 
 ### 背景工作、錯誤與關閉策略
 
@@ -254,33 +251,26 @@ Remove-Variable smtpSecret, smtpCredential
 - 工作者只寫入 thread-safe 結果佇列；主執行緒每 100 ms 由 QTimer 取得結果並更新 Qt 控制項。
 - SMTP 使用系統信任憑證與主機名稱驗證。SSL 直接加密；STARTTLS 成功後才登入。無明文降級、無自動重試。
 - 登入失敗、收件人被拒、網路逾時、TLS 或其他錯誤都會顯示分類原因；終端機只記錄擷取編號及錯誤類型，不輸出密碼、SMTP 完整回應、認證資料或 traceback。逾時／斷線有可能發生在伺服器已接受後，寄送結果可能不明。
-- 按離開或標題列關閉時，停止尚未完成的模擬擷取、取消尚未開始的通知、停止接受新通知。如果有正在寄送的一封，視窗暫緩關閉，事件迴圈持續運作並顯示等待文字；工作者結束且 join 後才關閉。
-- 不強制殺死執行緒。`timeout_seconds` 是每次 socket 操作的逾時，**不是整封信或關閉等待的總時間上限**；多次 SMTP 操作及作業系統 DNS 解析可能使等待較長。直接呼叫 `QApplication.quit()` 時，事件迴圈退出後仍會取消等待佇列並 join；此替代路徑不再提供等待畫面。強制終止程序不在優雅關閉保證範圍內。
+- 按離開或標題列關閉時，取消尚未完成的 NI 擷取、取消尚未開始的通知、停止接受新通知。如果仍有擷取工作或正在寄送的一封，視窗暫緩關閉，事件迴圈持續運作並顯示等待文字；擷取與寄信工作者均結束且 join 後才關閉。
+- 不強制殺死執行緒。`timeout_seconds` 是每次 socket 操作的逾時，**不是整封信或關閉等待的總時間上限**；多次 SMTP 操作及作業系統 DNS 解析可能使等待較長。直接呼叫 `QApplication.quit()` 時，事件迴圈退出後仍會取消擷取、取消等待佇列並 join 兩種工作者；此替代路徑不再提供等待畫面。強制終止程序不在優雅關閉保證範圍內。
 - 待寄通知只在記憶體，不持久化；關閉取消後不會在下次啟動補寄。
 
-## 10. 給 Codex／後續維護者
+## 10. 給 Codex／後續維護者的任務規格
 
-1. 先閱讀適用的 `AGENTS.md` 及實際程式，再判斷本次修改範圍。README 的待辦內容不代表每次任務都要全部實作。
-2. 若在上傳專案鏡像中工作，遵守唯讀與同步檔案限制；需要時建立可寫入副本，勿更動唯讀來源。
-3. 保留既有使用者設定與擷取資料，勿以範例值覆蓋。
-4. 區分模擬功能與正式功能；不要宣稱已接通設備、載入模型或寄出郵件，除非已有驗證證據。
-5. 除非本次需求必要，不要順帶重構整個介面、改變 CSV 欄位或改動判定方向。
-6. 新增設備或網路工作時，避免阻塞 GUI，並設計好執行緒與視窗的生命週期。
-7. 依修改範圍驗證啟動、設定儲存、擷取、歷史紀錄、CSV 與新增功能；清楚說明無法執行的檢查。
-8. 完成修改後同步更新 README，列出實際變更、驗證結果與仍待使用者設定的項目。
+1. 先閱讀 AGENTS.md、README.md、當前程式，確認分支與未提交變更；不提交、不推送，不覆蓋使用者的 nidaqtest.py、本機 config.json 或資料。
+2. 本次需求已明確授權「DAQ 真實讀值 + 隨機 OK／NG + NG Email + 手動 Excel 儲存」。**不要自行停用隨機判定／NG 通知，也不要宣稱已完成 AI 模型。**
+3. 預設只擷取 Dev1/ai0，DIFF、±10 V、1000 samples/s、1000 samples。Current 留白，不假造第二通道或安培換算。
+4. 只有完整成功的擷取才進入 predict／history／notify；設備錯誤不得退回假資料。
+5. 所有 DAQ 操作在背景執行，UI 更新在主執行緒。修改生命週期時一併驗證關窗取消、等待釋放、沒有晚到的寄信。
+6. Email 收件人、啟用狀態、憑證環境變數與背景佇列沿用第 9 節；不得把個資、密碼寫進測試或版本控制。SMTP 測試預設 mock。
+7. 新資料輸出真正 `.xlsx`，使用者儲存路徑與年月日結構保留；防止同秒覆蓋。檢查全部 Voltage 原值、Current 空白、分數／判定及擷取設定快照。
+8. 不為本次工作另行重構 UI、增加 AI、增加第二通道、重寫全部依賴或改變通知內容。若未來加入電流，要先確定感測器與轉換比例。
+9. 執行相關測試；分別報告 mock、自動實體擷取、原生 UI、真實寄信的實際驗證範圍，不得混為全部已驗證。
+10. 修改完成更新 README，記錄變更、測試結果、待確認事項與 Asia/Taipei 完成時間。
 
-## 11. 基本人工檢查清單
+## 11. 歷史紀錄說明
 
-- 程式可載入主視窗，顯示設定中的兩個閘道位置。
-- 未擷取即按「儲存」，會提示目前沒有資料。
-- 按「擷取」後有執行中狀態，完成後可再次擷取。
-- 分數、OK／NG 顏色及新增歷史紀錄一致。
-- 儲存後，在設定路徑下產生日期資料夾與 CSV。
-- CSV 欄位與當次擷取內容一致。
-- 修改設定後會寫入 JSON，重新啟動仍可讀取。
-- 啟用 Email 後：驗證 OK 不寄、NG 每次一封、設定變更生效、寄送失敗不影響擷取，以及關閉時的工作處理。
-
-以上是驗證建議清單，不是已通過的測試報告。
+以下第 12、13 節保留既有開發歷史，當時的模擬擷取／CSV 敘述僅適用舊版本；目前行為以第 1～10 節與最新開發紀錄為準。
 
 ## 12. Email 功能開發紀錄（2026-09-17）
 
@@ -325,3 +315,41 @@ Remove-Variable smtpSecret, smtpCredential
 驗證命令同第 12 節；新增 SMTP 斷線／拒送分類及缺少本機設定時自動建立停用預設值的測試。真實 SMTP 及原生桌面人工驗證限制仍同上節。
 
 本次修改與檢查完成時間：**2026-09-19 12:31（Asia/Taipei，UTC+08:00）**。共 **18 項測試全部通過**（4.357 秒），`git diff --check` 與暫存區格式檢查通過；忽略規則確認排除本機設定、AGENTS.md、虛擬環境、CSV 資料及 Python 快取。
+
+
+## 14. NI DAQ 與 Excel 功能開發紀錄（2026-09-24）
+
+修改完成時間：**2026-09-24 14:20:14（Asia/Taipei，UTC+08:00）**。
+
+開始時分支為 `feature/email-notification`，已有使用者未追蹤的 `nidaqtest.py`，本次保留不動。修改 `main.py`、`config.example.json`、`requirements.txt`、`tests/test_email_notifications.py`、本 README；新增 `daq_acquisition.py`、`excel_export.py`、`tests/test_daq_acquisition.py`。沒有修改本機 `config.json`、`email_notifier.py`、`.ui` 或既有資料，沒有提交或推送。
+
+變更：UI 擷取改走背景 NI-DAQmx 硬體有限取樣；只讀電壓，電流空白；保留原隨機判定與 NG 通知；CSV 儲存改為 Excel，加入本次來源設定快照與防覆寫檔名；補齊錯誤及關閉處理、狀態文字換行、給 Codex 的完整執行規格。
+
+### 自動測試
+
+`python -m unittest discover -s tests -v`：**34 項測試全部通過（5.081 秒）**。使用既有 Python 3.11.9、PySide6 6.11.1、nidaqmx 1.6.0，以及本次安裝的 openpyxl 3.1.5。DAQ API 與 SMTP 均 mock，不操作設備或寄出真實郵件。`py_compile` 與 `git diff --check` 通過（僅 Git LF／CRLF 提示）。
+
+涵蓋：有限取樣參數與完整原值、最後不足一段的讀取、驅動回報取樣率、取消及釋放、缺驅動／套件、占用／裝置／通道／逾時、非有限／不足樣本、無效設定；按鈕啟動背景工作、重複擷取防護、UI 事件仍運作、關窗後不寄新信、失敗保留上一批及可再次擷取；Excel 1000 筆原值、空白 Current、數值與日期型別、原五欄、metadata 快照、同秒不同檔名、目錄／寫入失敗復原、無資料提示；既有 NG／OK 通知、連續 NG、收件設定變更、SMTP 錯誤及關閉策略等。
+
+### 實體 NI-DAQmx 驗證
+
+在一般 Windows 執行環境，直接呼叫本次 `acquire_voltage()`，成功取得：
+
+| 項目 | 結果 |
+| --- | --- |
+| 型號／來源 | USB-6211；is_simulated = False |
+| 通道／模式 | Dev1/ai0；DIFF；±10 V；硬體 FINITE |
+| 樣本數 | 1000 |
+| 實際取樣率 | 1000.0 samples/s |
+| 電壓最小／最大 | 約 -0.030580314 / +0.011515767 V |
+| 執行結果 | 正常返回並釋放 Task，未寄信 |
+
+受限執行環境的首次驅動讀取未完成，已停止該次驗證；在獲允許的一般 Windows 環境重新執行有 30 秒外部上限的獨立測試後成功。這個 30 秒上限只屬於驗證程序，不是主程式的強制終止策略。
+
+### 尚待確認
+
+- 以上實體測試驗證單獨擷取模組；UI 按鈕與其餘功能鏈透過 mock／Qt offscreen 測試。尚未人工完成原生 UI → 實體擷取 → 真實 NG 收信 → Excel 桌面開啟的整套流程。
+- 未知當時輸入訊號與接線，不可把約零電壓的讀值視為量測準確度或感測器校正通過。
+- 已產生並查看 offscreen UI 截圖，確認狀態區可換行；該平台中文字型仍呈方框，因此原生 Windows 字型／DPI 顯示待人工確認。
+- Excel 已使用 openpyxl 重新開啟檢查結構與全批數值；尚未在 Microsoft Excel 桌面人工檢查。
+- 真實 SMTP 登入、網路與收件匣投遞沿用既有設定，本次未寄送實際測試信。AI 模型與電流感測器仍未接入，依使用者要求保留隨機 OK／NG。

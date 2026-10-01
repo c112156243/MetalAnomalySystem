@@ -13,5 +13,13 @@
         "sender": "",
         "password_env": "METAL_SMTP_PASSWORD",
         "timeout_seconds": 20
+    },
+    "daq": {
+        "channel": "Dev1/ai0",
+        "terminal_config": "DIFF",
+        "min_voltage": -10.0,
+        "max_voltage": 10.0,
+        "sample_rate": 1000.0,
+        "samples_per_channel": 1000
     }
 }
