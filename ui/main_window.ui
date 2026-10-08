@@ -15,7 +15,7 @@ QLabel#lblTitle { color: #222222; font-size: 22px; font-weight: 700; }
 QLabel#lblScore { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 14px; border-radius: 2px; }
 QLabel#lblGateway1Title, QLabel#lblGateway2Title, QLabel#lblPredictionTitle { background-color: #4b78c6; color: white; font-size: 22px; font-weight: 700; padding: 10px 18px; }
 QLabel#lblGateway1, QLabel#lblGateway2 { color: white; font-size: 18px; }
-QLabel#lblVoltageValue, QLabel#lblCurrentValue { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 8px 28px; }
+QLabel#lblVoltageValue, QLabel#lblVoltage2Value { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 8px 28px; }
 QLabel#lblPrediction { background-color: #4b78c6; color: white; font-size: 24px; font-weight: 700; padding: 12px 28px; }
 QLabel#lblStatus { background-color: #72b447; color: white; font-size: 18px; font-weight: 700; padding: 8px 14px; }
 QPushButton { background-color: #4b78c6; color: white; border: none; min-height: 48px; font-size: 20px; font-weight: 700; padding: 4px 14px; }
@@ -99,11 +99,14 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
          <widget class="QFrame" name="gateway1Frame">
           <property name="minimumSize"><size><width>700</width><height>190</height></size></property>
           <layout class="QVBoxLayout" name="gateway1Layout">
-           <item><spacer name="g1Top"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblGateway1Title"><property name="text"><string>閘道位置1</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblVoltageValue"><property name="text"><string>V</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblGateway1"><property name="text"><string>192.168.1.101</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item><spacer name="g1Bottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+           <item>
+            <layout class="QHBoxLayout" name="gateway1HeaderLayout">
+             <item><widget class="QLabel" name="lblGateway1Title"><property name="text"><string>閘道位置1 (V)</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblVoltageValue"><property name="text"><string>-- V</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblGateway1"><property name="text"><string>192.168.1.101</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+            </layout>
+           </item>
+           <item><widget class="QWidget" name="voltagePlotContainer" native="true"/></item>
           </layout>
          </widget>
         </item>
@@ -111,11 +114,14 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
          <widget class="QFrame" name="gateway2Frame">
           <property name="minimumSize"><size><width>700</width><height>190</height></size></property>
           <layout class="QVBoxLayout" name="gateway2Layout">
-           <item><spacer name="g2Top"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblGateway2Title"><property name="text"><string>閘道位置2</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblCurrentValue"><property name="text"><string>I</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblGateway2"><property name="text"><string>192.168.1.102</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item><spacer name="g2Bottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+           <item>
+            <layout class="QHBoxLayout" name="gateway2HeaderLayout">
+             <item><widget class="QLabel" name="lblGateway2Title"><property name="text"><string>閘道位置2 (V)</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblVoltage2Value"><property name="text"><string>-- V</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblGateway2"><property name="text"><string>192.168.1.102</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+            </layout>
+           </item>
+           <item><widget class="QWidget" name="voltagePlot2Container" native="true"/></item>
           </layout>
          </widget>
         </item>

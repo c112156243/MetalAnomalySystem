@@ -6,6 +6,7 @@ from datetime import datetime
 from queue import Empty
 from daq_acquisition import CaptureWorker, AcquisitionError, apply_daq_defaults
 from excel_export import save_capture_excel
+from voltage_waveform import VoltageWaveform
 
 from PySide6.QtCore import Qt, QTimer, QObject, QEvent
 from email_notifier import (
@@ -512,6 +513,19 @@ class MainWindow(QObject):
         )
 
         self.tableHistory = self.ui.tableHistory
+        self.voltage_plot = VoltageWaveform(self.ui.voltagePlotContainer)
+        self.voltage_plot2 = VoltageWaveform(self.ui.voltagePlot2Container, second_channel=True)
+        self.voltage_views = (
+            (self.voltage_plot, self.ui.lblVoltageValue),
+            (self.voltage_plot2, self.ui.lblVoltage2Value),
+        )
+        for plot, label in self.voltage_views:
+            plot_layout = QVBoxLayout(plot.parentWidget())
+            plot_layout.setContentsMargins(0, 0, 0, 0)
+            plot_layout.addWidget(plot)
+            label.setToolTip("本通道最新一筆電壓；可用 Auto-scale chart 切換電壓軸自動縮放。")
+        for frame in (self.ui.gateway1Frame, self.ui.gateway2Frame):
+            frame.setMinimumHeight(max(frame.minimumHeight(), frame.minimumSizeHint().height()))
 
         # ----------------------------------------------------
         # 狀態 Label（已放在 .ui 內）
@@ -553,6 +567,7 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self.current_voltage = []
+        self.current_voltage2 = []
         self.current_current = []
 
         self.current_score = None
@@ -605,6 +620,8 @@ class MainWindow(QObject):
         self.status_label.setText(
             "系統待機中"
         )
+        # 依實際字型與波形高度保留最小空間，避免縮小視窗時圖表被下方區塊遮住。
+        self.ui.setMinimumSize(self.ui.minimumSize().expandedTo(self.ui.minimumSizeHint()))
 
     # ========================================================
     # 歷史紀錄 Table
@@ -689,7 +706,7 @@ class MainWindow(QObject):
         self._latest_notification_id = None
         self.email_status_label.setText("Email：擷取中，等待本次結果（先前通知狀態請查看歷史列提示）")
         self.status_label.setText(
-            f"進行中：正在擷取 {worker.settings['channel']} 電壓..."
+            f"進行中：正在擷取 {worker.settings['channel']}、{worker.settings['channel2']} 電壓..."
         )
 
         # ----------------------------------------------------
@@ -716,6 +733,9 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self._capture_worker = worker
+        for plot, label in self.voltage_views:
+            plot.begin_capture(worker.settings)
+            label.setText("-- V")
         try:
             worker.start()
         except Exception:
@@ -726,7 +746,18 @@ class MainWindow(QObject):
 
     def poll_capture_results(self):
         worker = self._capture_worker
-        if worker is None or worker.is_running():
+        if worker is None:
+            return
+        while True:
+            try:
+                progress = worker.progress.get_nowait()
+            except Empty:
+                break
+            if not self._closing:
+                for plot, label in self.voltage_views:
+                    plot.append_progress(progress)
+                    label.setText(f"{plot.voltage[-1]:.4f} V")
+        if worker.is_running():
             return
         worker.wait()
         result, error = worker.results.get_nowait()
@@ -740,6 +771,13 @@ class MainWindow(QObject):
             self.complete_capture(result)
 
     def capture_failed(self, reason):
+        for plot, label in self.voltage_views:
+            if self.current_capture is not None:
+                plot.show_capture(self.current_capture, "擷取失敗，保留上一批")
+                label.setText(f"{plot.voltage[-1]:.4f} V")
+            else:
+                plot.clear("擷取失敗，尚無成功資料")
+                label.setText("-- V")
         self._latest_notification_id = None
         previous = "；保留上一批成功資料" if self.current_voltage else ""
         self.status_label.setText(f"擷取失敗：{reason}{previous}")
@@ -756,7 +794,11 @@ class MainWindow(QObject):
             return
         self.current_capture = result
         self.current_voltage = list(result.voltage)
+        self.current_voltage2 = list(result.voltage2)
         self.current_current = [None] * len(result.voltage)
+        for plot, label in self.voltage_views:
+            plot.show_capture(result)
+            label.setText(f"{plot.voltage[-1]:.4f} V")
 
         # ----------------------------------------------------
         # 進行預測
@@ -819,7 +861,7 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self.status_label.setText(
-            f"擷取完成：{result.channel}，{len(result.voltage)} 筆，"
+            f"擷取完成：{result.channel}、{result.channel2}，每通道 {len(result.voltage)} 筆，"
             f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流未量測，OK／NG 為隨機測試"
         )
 

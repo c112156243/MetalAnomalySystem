@@ -16,6 +16,7 @@
     },
     "daq": {
         "channel": "Dev1/ai0",
+        "channel2": "Dev1/ai1",
         "terminal_config": "DIFF",
         "min_voltage": -10.0,
         "max_voltage": 10.0,
