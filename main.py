@@ -6,7 +6,11 @@ from datetime import datetime
 from queue import Empty
 from daq_acquisition import CaptureWorker, AcquisitionError, apply_daq_defaults
 from excel_export import save_capture_excel
-from voltage_waveform import VoltageWaveform
+from voltage_waveform import SignalWaveform
+from engineering_settings import apply_engineering_defaults, validate_engineering
+from engineering_dialog import EngineeringDialog
+from digital_trigger import DigitalWorker
+from prediction_report import PredictionPlot, SegmentResult, WINDOW_SIZE, render_report_png
 
 from PySide6.QtCore import Qt, QTimer, QObject, QEvent
 from email_notifier import (
@@ -68,13 +72,13 @@ ICON_FILE = os.path.join(
 def load_config():
     """讀取 config.json"""
 
-    default_config = apply_daq_defaults(apply_email_defaults({
+    default_config = apply_engineering_defaults(apply_daq_defaults(apply_email_defaults({
         "gateway1": "192.168.1.101",
         "gateway2": "192.168.1.102",
         "save_path": "data",
         "account": "user@example.com.tw",
         "device_number": "DEVICE001"
-    }))
+    })))
 
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config)
@@ -89,7 +93,7 @@ def load_config():
             if key not in config:
                 config[key] = value
 
-        return apply_daq_defaults(apply_email_defaults(config))
+        return apply_engineering_defaults(apply_daq_defaults(apply_email_defaults(config)))
 
     except Exception as e:
         print("讀取設定檔失敗:", e)
@@ -99,13 +103,14 @@ def load_config():
 def save_config(config):
     """儲存 config.json"""
 
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            config,
-            f,
-            ensure_ascii=False,
-            indent=4
-        )
+    temporary = CONFIG_FILE + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+        os.replace(temporary, CONFIG_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def show_message_box(parent, icon, title, text):
@@ -174,211 +179,10 @@ def create_today_folder(base_path):
 # 設定視窗
 # ============================================================
 
-class SettingsDialog(QDialog):
-
+class SettingsDialog(EngineeringDialog):
     def __init__(self, config, parent=None):
-
-        super().__init__(parent)
-
-        self.config = config
-
-        self.setWindowTitle("帳號設定")
+        super().__init__(config, parent, save_config, show_message_box)
         self.setWindowIcon(QIcon(ICON_FILE))
-        self.resize(450, 300)
-        self.setStyleSheet(
-            """
-            QDialog {
-                background-color: white;
-            }
-            QDialog QLabel {
-                color: #1f4e79;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QDialog QLineEdit {
-                color: #1f4e79;
-                background-color: white;
-                border: 1px solid #8aa9c7;
-                padding: 5px;
-            }
-            QDialog QPushButton {
-                color: white;
-                background-color: #4b78c6;
-                min-height: 36px;
-                padding: 4px 14px;
-            }
-            """
-        )
-
-        # ----------------------------------------------------
-        # 欄位
-        # ----------------------------------------------------
-
-        self.gateway1_edit = QLineEdit(
-            config["gateway1"]
-        )
-
-        self.gateway2_edit = QLineEdit(
-            config["gateway2"]
-        )
-
-        self.path_edit = QLineEdit(
-            config["save_path"]
-        )
-
-        self.account_edit = QLineEdit(
-            config["account"]
-        )
-
-        self.device_edit = QLineEdit(
-            config["device_number"]
-        )
-
-        # ----------------------------------------------------
-        # 選擇路徑按鈕
-        # ----------------------------------------------------
-
-        self.btnBrowse = QPushButton("變更路徑")
-
-        self.btnBrowse.clicked.connect(
-            self.select_folder
-        )
-
-        path_layout = QHBoxLayout()
-
-        path_layout.addWidget(
-            self.path_edit
-        )
-
-        path_layout.addWidget(
-            self.btnBrowse
-        )
-
-        # ----------------------------------------------------
-        # Form
-        # ----------------------------------------------------
-
-        form = QFormLayout()
-
-        form.addRow(
-            "閘道位置1:",
-            self.gateway1_edit
-        )
-
-        form.addRow(
-            "閘道位置2:",
-            self.gateway2_edit
-        )
-
-        form.addRow(
-            "儲存路徑:",
-            path_layout
-        )
-
-        form.addRow(
-            "帳號:",
-            self.account_edit
-        )
-
-        form.addRow(
-            "裝置號碼:",
-            self.device_edit
-        )
-
-        # ----------------------------------------------------
-        # 按鈕
-        # ----------------------------------------------------
-
-        self.btnSave = QPushButton("儲存變更")
-        self.btnCancel = QPushButton("取消")
-
-        self.btnSave.clicked.connect(
-            self.save_settings
-        )
-
-        self.btnCancel.clicked.connect(
-            self.reject
-        )
-
-        button_layout = QHBoxLayout()
-
-        button_layout.addWidget(
-            self.btnSave
-        )
-
-        button_layout.addWidget(
-            self.btnCancel
-        )
-
-        # ----------------------------------------------------
-        # 主 Layout
-        # ----------------------------------------------------
-
-        layout = QVBoxLayout()
-
-        layout.addLayout(form)
-
-        layout.addStretch()
-
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
-
-    # --------------------------------------------------------
-    # 選擇資料夾
-    # --------------------------------------------------------
-
-    def select_folder(self):
-
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "選擇儲存資料夾"
-        )
-
-        if folder:
-            self.path_edit.setText(folder)
-
-    # --------------------------------------------------------
-    # 儲存設定
-    # --------------------------------------------------------
-
-    def save_settings(self):
-
-        self.config["gateway1"] = (
-            self.gateway1_edit.text()
-        )
-
-        self.config["gateway2"] = (
-            self.gateway2_edit.text()
-        )
-
-        self.config["save_path"] = (
-            self.path_edit.text()
-        )
-
-        self.config["account"] = (
-            self.account_edit.text()
-        )
-
-        self.config["device_number"] = (
-            self.device_edit.text()
-        )
-
-        save_config(self.config)
-
-        show_message_box(
-            self,
-            QMessageBox.Icon.Information,
-            "設定完成",
-            "設定已成功儲存。"
-        )
-
-        self.accept()
-
-
-# ============================================================
-# 主視窗
-# ============================================================
 
 class MainWindow(QObject):
 
@@ -513,18 +317,22 @@ class MainWindow(QObject):
         )
 
         self.tableHistory = self.ui.tableHistory
-        self.voltage_plot = VoltageWaveform(self.ui.voltagePlotContainer)
-        self.voltage_plot2 = VoltageWaveform(self.ui.voltagePlot2Container, second_channel=True)
-        self.voltage_views = (
+        self.prediction_plot = PredictionPlot(self.ui.predictionFrame)
+        self.ui.predictionLayout.addWidget(self.prediction_plot)
+        self.voltage_plot = SignalWaveform(self.ui.voltagePlotContainer)
+        self.current_plot = SignalWaveform(self.ui.currentPlotContainer, current_mode=True)
+        self.signal_views = (
             (self.voltage_plot, self.ui.lblVoltageValue),
-            (self.voltage_plot2, self.ui.lblVoltage2Value),
+            (self.current_plot, self.ui.lblCurrentValue),
         )
-        for plot, label in self.voltage_views:
+        for plot, label in self.signal_views:
             plot_layout = QVBoxLayout(plot.parentWidget())
             plot_layout.setContentsMargins(0, 0, 0, 0)
             plot_layout.addWidget(plot)
-            label.setToolTip("本通道最新一筆電壓；可用 Auto-scale chart 切換電壓軸自動縮放。")
-        for frame in (self.ui.gateway1Frame, self.ui.gateway2Frame):
+            label.setToolTip(f"{plot.signal_name}最新讀值（{plot.unit}）；可用 Auto-scale chart 切換縮放。")
+        self.ui.ensurePolished()
+        for frame in (self.ui.gateway1Frame, self.ui.gateway2Frame, self.ui.predictionFrame):
+            frame.layout().invalidate()
             frame.setMinimumHeight(max(frame.minimumHeight(), frame.minimumSizeHint().height()))
 
         # ----------------------------------------------------
@@ -543,11 +351,21 @@ class MainWindow(QObject):
         # 獨立使用既有 QStatusBar，不覆蓋擷取／儲存狀態。
         self.email_status_label = QLabel(self.ui)
         self.email_status_label.setObjectName("lblEmailStatus")
-        self.email_status_label.setStyleSheet("color: #222222; padding: 3px;")
+        self.email_status_label.setStyleSheet("color: #222222; padding: 3px; font-size: 16px;")
         self.email_status_label.setWordWrap(True)
         self.ui.statusBar().addWidget(self.email_status_label, 1)
         self.notifier = EmailNotifier()
         self._capture_worker = None
+        self._digital_worker = None
+        self._digital_ready = False
+        self._digital_pending = False
+        self._settings_open = False
+        self._auto_save = False
+        self._stopping = False
+        self._saving = False
+        self._preview_count = 0
+        self._segments = []
+        self.current_segments = ()
         self._closing = False
         self._capture_id = 0
         self._latest_notification_id = None
@@ -560,6 +378,9 @@ class MainWindow(QObject):
         self._capture_timer = QTimer(self)
         self._capture_timer.setInterval(50)
         self._capture_timer.timeout.connect(self.poll_capture_results)
+        self._digital_timer = QTimer(self)
+        self._digital_timer.timeout.connect(self.poll_digital)
+        self._digital_timer.start(20)
         self.show_email_ready_status()
 
         # ----------------------------------------------------
@@ -567,7 +388,6 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self.current_voltage = []
-        self.current_voltage2 = []
         self.current_current = []
 
         self.current_score = None
@@ -575,6 +395,7 @@ class MainWindow(QObject):
 
         self.current_capture = None
         self.last_excel_path = None
+        self.last_png_path = None
 
         # ----------------------------------------------------
         # 初始化 Table
@@ -622,6 +443,7 @@ class MainWindow(QObject):
         )
         # 依實際字型與波形高度保留最小空間，避免縮小視窗時圖表被下方區塊遮住。
         self.ui.setMinimumSize(self.ui.minimumSize().expandedTo(self.ui.minimumSizeHint()))
+        self.configure_digital()
 
     # ========================================================
     # 歷史紀錄 Table
@@ -648,6 +470,8 @@ class MainWindow(QObject):
         self.tableHistory.horizontalHeader().setStretchLastSection(
             True
         )
+        header = self.tableHistory.horizontalHeader()
+        header.setSectionResizeMode(header.ResizeMode.Stretch)
 
     # ========================================================
     # 顯示閘道資訊
@@ -655,8 +479,8 @@ class MainWindow(QObject):
 
     def update_gateway_display(self):
 
-        gateway1 = self.config["gateway1"]
-        gateway2 = self.config["gateway2"]
+        gateway1 = self.config["daq"]["channel"]
+        gateway2 = "程式模擬（非實測）"
 
         self.ui.lblGateway1.setText(
             gateway1
@@ -694,19 +518,32 @@ class MainWindow(QObject):
     # 擷取資料
     # ========================================================
 
-    def capture_data(self):
+    def capture_data(self, checked=False, external=False):
 
-        if self._closing or self._capture_worker is not None:
+        if self._closing or self._capture_worker is not None or self._saving or self._settings_open:
             return
         try:
-            worker = CaptureWorker(self.config.get("daq", {}))
+            engineering, _ = validate_engineering(self.config)
+            if engineering["trigger_mode"] and not external:
+                self.status_label.setText("目前為外部模式，請操作外接按鈕；可在工程設定切換內部模式。")
+                return
+            if external and not self._digital_ready:
+                return
+            if engineering["do_channel"] and not self._digital_ready:
+                raise AcquisitionError("數位輸出尚未就緒，請確認工程設定與設備。")
+            worker = CaptureWorker(self.config.get("daq", {}), continuous=external)
         except AcquisitionError as error:
             self.capture_failed(str(error))
             return
+        self._auto_save = external
+        self._stopping = False
+        self._preview_count = 0
+        self._segments = []
+        self.prediction_plot.show_segments(())
         self._latest_notification_id = None
         self.email_status_label.setText("Email：擷取中，等待本次結果（先前通知狀態請查看歷史列提示）")
         self.status_label.setText(
-            f"進行中：正在擷取 {worker.settings['channel']}、{worker.settings['channel2']} 電壓..."
+            f"進行中：正在擷取 {worker.settings['channel']} 電壓，並產生程式模擬電流..."
         )
 
         # ----------------------------------------------------
@@ -733,9 +570,9 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self._capture_worker = worker
-        for plot, label in self.voltage_views:
+        for plot, label in self.signal_views:
             plot.begin_capture(worker.settings)
-            label.setText("-- V")
+            label.setText(f"-- {plot.unit}")
         try:
             worker.start()
         except Exception:
@@ -754,13 +591,17 @@ class MainWindow(QObject):
             except Empty:
                 break
             if not self._closing:
-                for plot, label in self.voltage_views:
+                for plot, label in self.signal_views:
                     plot.append_progress(progress)
-                    label.setText(f"{plot.voltage[-1]:.4f} V")
+                    label.setText(f"{plot.values[-1]:.4f} {plot.unit}")
+                self._preview_count += len(progress.voltage)
+                self.classify_segments(self._preview_count)
         if worker.is_running():
             return
         worker.wait()
         result, error = worker.results.get_nowait()
+        if worker.cancel.is_set():
+            result, error = None, error or "本次擷取已取消，資料未採用。"
         self._capture_worker = None
         self._capture_timer.stop()
         if self._closing:
@@ -769,15 +610,101 @@ class MainWindow(QObject):
             self.capture_failed(error)
         elif result is not None:
             self.complete_capture(result)
+        else:
+            self.capture_failed("本次擷取已取消，資料未採用。")
+
+    def classify_segments(self, count):
+        changed = False
+        while len(self._segments) < count // WINDOW_SIZE:
+            score, prediction = self.predict()
+            start = len(self._segments) * WINDOW_SIZE
+            self._segments.append(SegmentResult(start, start + WINDOW_SIZE, score, prediction))
+            changed = True
+            reset_on_stop = self._stopping and self.config["engineering"]["trigger_mode"] == 1
+            if prediction == "NG" and self._digital_worker is not None and not reset_on_stop:
+                self._digital_worker.alarm.set()
+        if changed:
+            self.prediction_plot.show_segments(self._segments)
+
+    def configure_digital(self):
+        self._digital_ready = False
+        self._digital_pending = True
+        if self._digital_worker is not None:
+            self._digital_worker.shutdown()
+
+    def poll_digital(self):
+        worker = self._digital_worker
+        if worker is not None:
+            while True:
+                try:
+                    event, detail = worker.events.get_nowait()
+                except Empty:
+                    break
+                if self._closing or self._digital_pending or self._settings_open:
+                    continue
+                if event == "ready":
+                    self._digital_ready = True
+                    self.status_label.setText("數位 I/O 就緒；外部模式請先放開按鈕，再按下開始。")
+                elif event == "error":
+                    self._digital_ready = False
+                    if self._capture_worker is not None:
+                        self._capture_worker.shutdown()
+                    self._auto_save = False
+                    self.status_label.setText(detail + " 可開啟工程設定重新啟用。")
+                    show_message_box(self.ui, QMessageBox.Icon.Warning, "數位 I/O 錯誤", detail)
+                elif not self._saving:
+                    self.handle_external_event(event)
+            if not worker.is_running():
+                worker.wait()
+                self._digital_worker = None
+                self._digital_ready = False
+        if (self._digital_pending and self._digital_worker is None
+                and not self._closing and not self._settings_open):
+            self._digital_pending = False
+            try:
+                settings, lines = validate_engineering(self.config)
+                if settings["trigger_mode"] or settings["do_channel"]:
+                    self._digital_worker = DigitalWorker(settings, lines)
+                    self._digital_worker.start()
+            except (AcquisitionError, RuntimeError) as error:
+                self._digital_worker = None
+                self.status_label.setText(f"工程設定待確認：{error}")
+
+    def handle_external_event(self, event):
+        if self._closing or self._settings_open or self._saving or not self._digital_ready:
+            return
+        mode = self.config["engineering"]["trigger_mode"]
+        if event == "pressed":
+            if self._digital_worker is not None:
+                self._digital_worker.alarm.clear()
+            if mode == 0:
+                return
+            if self._capture_worker is None:
+                self.capture_data(external=True)
+            elif mode == 1:
+                self.stop_external_capture()
+        elif event == "released" and mode == 2:
+            self.stop_external_capture()
+
+    def stop_external_capture(self):
+        if self._capture_worker is not None and self._auto_save and not self._stopping:
+            self._stopping = True
+            self._capture_worker.finish()
+            self.status_label.setText("已收到停止要求，正在整理資料並儲存 Excel 與 PNG...")
 
     def capture_failed(self, reason):
-        for plot, label in self.voltage_views:
+        self._auto_save = False
+        self._stopping = False
+        self._segments = []
+        self._preview_count = 0
+        self.prediction_plot.show_segments(self.current_segments)
+        for plot, label in self.signal_views:
             if self.current_capture is not None:
                 plot.show_capture(self.current_capture, "擷取失敗，保留上一批")
-                label.setText(f"{plot.voltage[-1]:.4f} V")
+                label.setText(f"{plot.values[-1]:.4f} {plot.unit}")
             else:
                 plot.clear("擷取失敗，尚無成功資料")
-                label.setText("-- V")
+                label.setText(f"-- {plot.unit}")
         self._latest_notification_id = None
         previous = "；保留上一批成功資料" if self.current_voltage else ""
         self.status_label.setText(f"擷取失敗：{reason}{previous}")
@@ -787,26 +714,36 @@ class MainWindow(QObject):
         self.btnSave.setEnabled(True)
         self.btnSettings.setEnabled(True)
         self.set_action_button_running(self.btnCapture, False)
+        if "未足1024筆" in reason and not self._closing:
+            show_message_box(self.ui, QMessageBox.Icon.Warning, "資料不足", reason)
 
     def complete_capture(self, result):
 
         if self._closing:
             return
+        if len(result.voltage) < WINDOW_SIZE:
+            self.capture_failed(f"資料未足1024筆（本次 {len(result.voltage)} 筆），不判定、不儲存。")
+            return
+        if len(result.voltage) != len(result.current):
+            self.capture_failed("電壓與模擬電流筆數不一致。")
+            return
+        self.classify_segments(len(result.voltage))
+        self.current_segments = tuple(self._segments)
+        self._segments = []
+        self._preview_count = 0
         self.current_capture = result
         self.current_voltage = list(result.voltage)
-        self.current_voltage2 = list(result.voltage2)
-        self.current_current = [None] * len(result.voltage)
-        for plot, label in self.voltage_views:
+        self.current_current = list(result.current)
+        for plot, label in self.signal_views:
             plot.show_capture(result)
-            label.setText(f"{plot.voltage[-1]:.4f} V")
+            label.setText(f"{plot.values[-1]:.4f} {plot.unit}")
 
         # ----------------------------------------------------
         # 進行預測
         # ----------------------------------------------------
 
-        score, prediction = (
-            self.predict()
-        )
+        score = min(item.score for item in self.current_segments)
+        prediction = "NG" if any(item.prediction == "NG" for item in self.current_segments) else "OK"
 
         self.current_score = score
         self.current_prediction = prediction
@@ -821,7 +758,7 @@ class MainWindow(QObject):
         )
 
         self.lblPrediction.setText(
-            f"預測結果：{prediction}"
+            f"模擬判定：{prediction}（{len(self.current_segments)} 段）"
         )
 
         # ----------------------------------------------------
@@ -861,8 +798,8 @@ class MainWindow(QObject):
         # ----------------------------------------------------
 
         self.status_label.setText(
-            f"擷取完成：{result.channel}、{result.channel2}，每通道 {len(result.voltage)} 筆，"
-            f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流未量測，OK／NG 為隨機測試"
+            f"擷取完成：{result.channel} 電壓，{len(result.voltage)} 筆，"
+            f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流為程式模擬，OK／NG 為隨機測試"
         )
 
         self.status_label.setStyleSheet(
@@ -884,6 +821,11 @@ class MainWindow(QObject):
 
         self.add_history()
         self.notify_capture_completed(completed_at, score, prediction)
+        auto_save = self._auto_save
+        self._auto_save = False
+        self._stopping = False
+        if auto_save:
+            self.save_data(automatic=True)
 
     def show_email_ready_status(self):
         email = self.config.get("email", {})
@@ -935,7 +877,7 @@ class MainWindow(QObject):
                 break
             self.update_email_status(capture_id, status)
         if (self._closing and not self.notifier.is_running()
-                and self._capture_worker is None):
+                and self._capture_worker is None and self._digital_worker is None):
             self.notifier.wait()
             self.ui.close()
 
@@ -1038,8 +980,8 @@ class MainWindow(QObject):
     # 儲存 Excel
     # ========================================================
 
-    def save_data(self):
-        if self._closing or self._capture_worker is not None:
+    def save_data(self, checked=False, automatic=False):
+        if self._closing or self._capture_worker is not None or self._saving:
             return
         if self.current_capture is None:
             show_message_box(
@@ -1049,38 +991,62 @@ class MainWindow(QObject):
             return
 
         self.set_action_button_running(self.btnSave, True)
+        self._saving = True
         self.btnSave.setEnabled(False)
-        self.status_label.setText("進行中：正在儲存 Excel...")
+        self.btnCapture.setEnabled(False)
+        self.btnSettings.setEnabled(False)
+        self.status_label.setText("進行中：正在儲存 Excel 與 PNG...")
         self.status_label.setStyleSheet("")
         try:
             self.today_folder = create_today_folder(self.config["save_path"])
             filepath = save_capture_excel(
                 self.today_folder, self.current_capture,
                 self.current_score, self.current_prediction, datetime.now(),
+                segments=self.current_segments,
+                report_png=render_report_png(self.current_capture, self.current_segments),
             )
             self.last_excel_path = filepath
-            self.status_label.setText("Excel 資料儲存完成")
-            show_message_box(
-                self.ui, QMessageBox.Icon.Information, "儲存成功",
-                f"資料已儲存：\n\n{filepath}"
-            )
+            self.last_png_path = os.path.splitext(filepath)[0] + ".png"
+            self.status_label.setText(f"Excel 與 PNG 儲存完成：{os.path.basename(filepath)}")
+            if not automatic:
+                show_message_box(
+                    self.ui, QMessageBox.Icon.Information, "儲存成功",
+                    f"資料已儲存：\n\n{filepath}\n{self.last_png_path}"
+                )
         except Exception as error:
-            self.status_label.setText("Excel 儲存失敗，擷取資料仍保留，可重新儲存")
+            self.status_label.setText("Excel／PNG 儲存失敗，擷取資料仍保留，可重新儲存")
             show_message_box(
                 self.ui, QMessageBox.Icon.Critical, "儲存失敗",
-                f"Excel 儲存失敗：\n{error}"
+                f"Excel／PNG 儲存失敗：\n{error}"
             )
         finally:
-            self.btnSave.setEnabled(not self._closing)
+            # 儲存期間的按鍵不排成下一次擷取，避免儲存完後突然啟動。
+            if self._digital_worker is not None:
+                retained = []
+                while True:
+                    try:
+                        item = self._digital_worker.events.get_nowait()
+                    except Empty:
+                        break
+                    if item[0] not in ("pressed", "released"):
+                        retained.append(item)
+                for item in retained:
+                    self._digital_worker.events.put(item)
+            self._saving = False
+            for button in (self.btnSave, self.btnCapture, self.btnSettings):
+                button.setEnabled(not self._closing)
             self.set_action_button_running(self.btnSave, False)
 
     # ========================================================
-    # 帳號設定
+    # 工程設定
     # ========================================================
 
     def open_settings(self):
 
-        print("DEBUG: 帳號設定按鈕被按下")
+        if self._closing or self._capture_worker is not None or self._saving:
+            return
+        self._settings_open = True
+        self.configure_digital()
 
         try:
 
@@ -1116,16 +1082,19 @@ class MainWindow(QObject):
         except Exception as e:
 
             print(
-                "帳號設定發生錯誤：",
+                "工程設定發生錯誤：",
                 repr(e)
             )
 
             show_message_box(
                 self.ui,
                 QMessageBox.Icon.Critical,
-                "帳號設定錯誤",
-                f"開啟帳號設定時發生錯誤：\n\n{e}"
+                "工程設定錯誤",
+                f"開啟工程設定時發生錯誤：\n\n{e}"
             )
+        finally:
+            self._settings_open = False
+            self.configure_digital()
 
     # ========================================================
     # 關閉程式
@@ -1137,8 +1106,11 @@ class MainWindow(QObject):
             self._closing = True
             if self._capture_worker is not None:
                 self._capture_worker.shutdown()
+            if self._digital_worker is not None:
+                self._digital_worker.shutdown()
             self.notifier.shutdown()
-            if self.notifier.is_running() or self._capture_worker is not None:
+            if (self.notifier.is_running() or self._capture_worker is not None
+                    or self._digital_worker is not None):
                 event.ignore()
                 self.btnCapture.setEnabled(False)
                 self.btnSave.setEnabled(False)
@@ -1150,6 +1122,7 @@ class MainWindow(QObject):
                 return True
             self.notifier.wait()
             self._email_timer.stop()
+            self._digital_timer.stop()
         return super().eventFilter(watched, event)
 
 
@@ -1172,6 +1145,9 @@ def main():
     finally:
         # 保護非視窗關閉路徑（例如 QApplication.quit）。
         window.notifier.shutdown()
+        if window._digital_worker is not None:
+            window._digital_worker.shutdown()
+            window._digital_worker.wait()
         if window._capture_worker is not None:
             window._capture_worker.shutdown()
             window._capture_worker.wait()

@@ -90,10 +90,10 @@ class EmailTests(unittest.TestCase):
 
     def sample_capture(self, when=None):
         return daq.CaptureResult(
-            tuple(index / 1000 for index in range(1000)),
+            tuple(index / 1000 for index in range(1024)),
             "Dev1/ai0", 1000.0, "DIFF", -10.0, 10.0,
             "USB-6211", False, when or datetime(2026, 9, 24, 12, 0),
-            tuple(-index / 2000 for index in range(1000)), "Dev1/ai1",
+            tuple(-index / 2000 for index in range(1024)),
         )
 
     def capture(self, score=0.12, prediction="NG", when=None):
@@ -144,14 +144,15 @@ class EmailTests(unittest.TestCase):
         workbook = load_workbook(self.window.last_excel_path)
         try:
             rows = list(workbook["擷取資料"].values)
-            self.assertEqual(len(rows), 1001)
-            self.assertEqual(list(rows[0]), ["Timestamp", "Voltage", "Current", "Score", "Prediction", "Voltage2"])
+            self.assertEqual(len(rows), 1025)
+            self.assertEqual(list(rows[0]), ["Timestamp", "Voltage", "Current", "Score", "Prediction", "CurrentSource"])
             self.assertEqual(rows[1][3:5], (0.12, "NG"))
             self.assertIsInstance(rows[1][0], datetime)
             self.assertEqual([row[1] for row in rows[1:]], self.window.current_voltage)
-            self.assertEqual([row[5] for row in rows[1:]], self.window.current_voltage2)
-            self.assertEqual(workbook["擷取設定"]["B16"].value, "Dev1/ai1")
-            self.assertTrue(all(row[2] is None for row in rows[1:]))
+            self.assertEqual([row[2] for row in rows[1:]], self.window.current_current)
+            self.assertEqual(workbook["擷取設定"]["B16"].value, "A")
+            self.assertTrue(all(row[5] == "程式模擬（非實測）" for row in rows[1:]))
+            self.assertIn("程式模擬", workbook["擷取設定"]["B13"].value)
             self.assertIn("尚未串接 AI", workbook["擷取設定"]["B14"].value)
         finally:
             workbook.close()
@@ -436,7 +437,7 @@ class EmailTests(unittest.TestCase):
             seen_threads.append(threading.get_ident())
             started.set()
             cancel.wait(3)
-            on_progress(daq.CaptureProgress((9.0,), "Dev1/ai0", 1000, 1000, False, (-9.0,), "Dev1/ai1"))
+            on_progress(daq.CaptureProgress((9.0,), "Dev1/ai0", 1000, 1000, False, (-9.0,)))
             # 模擬取消與完成競爭：即使回傳成功，也不能在關窗後判定／寄信。
             return self.sample_capture()
 
@@ -453,8 +454,8 @@ class EmailTests(unittest.TestCase):
         self.until(lambda: not self.window.ui.isVisible())
         self.assertIsNone(self.window._capture_worker)
         self.assertEqual(self.window.tableHistory.rowCount(), 0)
-        self.assertEqual(self.window.voltage_plot.voltage, [])
-        self.assertEqual(self.window.voltage_plot2.voltage, [])
+        self.assertEqual(self.window.voltage_plot.values, [])
+        self.assertEqual(self.window.current_plot.values, [])
         self.ssl_factory.assert_not_called()
         self.assertNotEqual(seen_threads[0], threading.get_ident())
 
@@ -462,7 +463,7 @@ class EmailTests(unittest.TestCase):
         release = threading.Event()
         self.addCleanup(release.set)
         preview = daq.CaptureProgress((0.1, -0.2, 0.3), "Dev1/ai0", 999, 1000, True,
-                                      (-0.1, 0.2, -0.3), "Dev1/ai1")
+                                      (-0.1, 0.2, -0.3))
 
         def delayed(settings, cancel, on_progress):
             on_progress(preview)
@@ -472,13 +473,13 @@ class EmailTests(unittest.TestCase):
         self.daq_read.side_effect = delayed
         with patch.object(self.window, "predict", return_value=(0.8, "OK")):
             self.window.btnCapture.click()
-            self.until(lambda: len(self.window.voltage_plot.voltage) == 3)
+            self.until(lambda: len(self.window.voltage_plot.values) == 3)
             self.assertTrue(self.window._capture_worker.is_running())
-            self.assertEqual(self.window.voltage_plot.voltage, list(preview.voltage))
-            self.assertEqual(self.window.voltage_plot2.voltage, list(preview.voltage2))
-            self.assertEqual(self.window.voltage_plot2.channel, "Dev1/ai1")
-            self.assertEqual(self.window.voltage_plot2.time_range, self.window.voltage_plot.time_range)
-            self.assertEqual(self.window.ui.lblVoltage2Value.text(), "-0.3000 V")
+            self.assertEqual(self.window.voltage_plot.values, list(preview.voltage))
+            self.assertEqual(self.window.current_plot.values, list(preview.current))
+            self.assertEqual(self.window.current_plot.channel, "程式模擬電流")
+            self.assertEqual(self.window.current_plot.time_range, self.window.voltage_plot.time_range)
+            self.assertEqual(self.window.ui.lblCurrentValue.text(), "-0.3000 A")
             self.assertEqual(self.window.voltage_plot.sample_rate, 999)
             self.assertEqual(self.window.voltage_plot.time_range, 1.0)
             self.assertTrue(self.window.voltage_plot.is_simulated)
@@ -488,31 +489,37 @@ class EmailTests(unittest.TestCase):
             self.ssl_factory.assert_not_called()
             release.set()
             self.until(lambda: self.window._capture_worker is None)
-        self.assertEqual(self.window.voltage_plot.voltage, self.window.current_voltage)
-        self.assertEqual(self.window.voltage_plot2.voltage, self.window.current_voltage2)
-        self.assertEqual(self.window.ui.lblVoltage2Value.text(), "-0.4995 V")
-        self.assertEqual(self.window.voltage_plot.time_range, 0.999)
+        self.assertEqual(self.window.voltage_plot.values, self.window.current_voltage)
+        self.assertEqual(self.window.current_plot.values, self.window.current_current)
+        self.assertEqual(self.window.ui.lblCurrentValue.text(), "-0.5115 A")
+        self.assertEqual(self.window.voltage_plot.time_range, 1.023)
         self.assertEqual(self.window.voltage_plot.message, "擷取完成")
-        self.assertEqual(self.window.ui.lblVoltageValue.text(), "0.9990 V")
+        self.assertEqual(self.window.ui.lblVoltageValue.text(), "1.0230 V")
         self.assertEqual(self.window.tableHistory.rowCount(), 1)
 
     def test_small_window_keeps_waveform_inside_gateway_panel(self):
         self.window.ui.resize(1050, 650)
         self.app.processEvents()
         for plot, frame in ((self.window.voltage_plot, self.window.ui.gateway1Frame),
-                            (self.window.voltage_plot2, self.window.ui.gateway2Frame)):
+                            (self.window.current_plot, self.window.ui.gateway2Frame)):
             bottom = plot.mapTo(frame, plot.rect().bottomRight())
             self.assertTrue(frame.rect().contains(bottom))
         self.assertGreaterEqual(self.window.ui.height(), self.window.ui.minimumSizeHint().height())
 
-    def test_second_voltage_scale_is_independent_and_current_stays_empty(self):
+    def test_current_is_marked_simulated_with_independent_ampere_scale(self):
         self.capture(0.8, "OK")
-        second_range = self.window.voltage_plot2.voltage_range()
+        second_range = self.window.current_plot.value_range()
         self.window.voltage_plot.auto_scale.click()
-        self.assertEqual(self.window.voltage_plot.voltage_range(), (-10, 10))
-        self.assertTrue(self.window.voltage_plot2.auto_scale.isChecked())
-        self.assertEqual(self.window.voltage_plot2.voltage_range(), second_range)
-        self.assertTrue(all(value is None for value in self.window.current_current))
+        self.assertEqual(self.window.voltage_plot.value_range(), (-10, 10))
+        self.assertTrue(self.window.current_plot.auto_scale.isChecked())
+        self.assertEqual(self.window.current_plot.value_range(), second_range)
+        self.assertEqual(self.window.current_current, list(self.window.current_capture.current))
+        self.assertFalse(self.window.voltage_plot.is_simulated)
+        self.assertTrue(self.window.current_plot.is_simulated)
+        self.assertEqual(self.window.current_plot.unit, "A")
+        self.assertIn("程式模擬", self.window.current_plot.accessibleName())
+        self.window.current_plot.auto_scale.click()
+        self.assertEqual(self.window.current_plot.value_range(), (-1, 1))
 
     def test_failed_preview_restores_previous_waveform_or_empty_state(self):
         for has_previous in (False, True):
@@ -525,25 +532,25 @@ class EmailTests(unittest.TestCase):
 
                 def failed(settings, cancel, on_progress):
                     on_progress(daq.CaptureProgress((5.0, 6.0), "Dev1/ai0", 1000, 1000, False,
-                                                    (-5.0, -6.0), "Dev1/ai1"))
+                                                    (-5.0, -6.0)))
                     release.wait(3)
                     raise daq.AcquisitionError("測試讀取中斷")
 
                 self.daq_read.side_effect = failed
                 with patch.object(self.window, "predict") as predict:
                     self.window.btnCapture.click()
-                    self.assertEqual(self.window.voltage_plot.voltage, [])
-                    self.assertEqual(self.window.voltage_plot2.voltage, [])
-                    self.until(lambda: len(self.window.voltage_plot.voltage) == 2)
+                    self.assertEqual(self.window.voltage_plot.values, [])
+                    self.assertEqual(self.window.current_plot.values, [])
+                    self.until(lambda: len(self.window.voltage_plot.values) == 2)
                     self.assertIs(self.window.current_capture, previous)
                     release.set()
                     self.until(lambda: self.window._capture_worker is None)
                     predict.assert_not_called()
-                self.assertEqual(self.window.voltage_plot.voltage,
+                self.assertEqual(self.window.voltage_plot.values,
                                  list(previous.voltage) if previous else [])
-                self.assertEqual(self.window.voltage_plot2.voltage,
-                                 list(previous.voltage2) if previous else [])
-                self.assertIn("擷取失敗", self.window.voltage_plot2.message)
+                self.assertEqual(self.window.current_plot.values,
+                                 list(previous.current) if previous else [])
+                self.assertIn("擷取失敗", self.window.current_plot.message)
                 self.assertIn("擷取失敗", self.window.voltage_plot.message)
                 self.assertEqual(self.window.tableHistory.rowCount(), int(has_previous))
                 self.ssl_factory.assert_not_called()
@@ -577,7 +584,8 @@ class EmailTests(unittest.TestCase):
         workbook = load_workbook(second)
         try:
             self.assertEqual(workbook["擷取設定"]["B2"].value, "Dev1/ai0")
-            self.assertEqual(workbook["擷取設定"]["B16"].value, "Dev1/ai1")
+            self.assertEqual(workbook["擷取設定"]["B16"].value, "A")
+            self.assertEqual(workbook["擷取設定"]["B19"].value, 5)
             self.assertEqual(workbook["擷取設定"]["B8"].value, 1000)
         finally:
             workbook.close()
@@ -597,7 +605,7 @@ class EmailTests(unittest.TestCase):
 
     def test_excel_rejects_mismatched_channel_lengths_without_partial_file(self):
         self.capture(0.8, "OK")
-        self.window.current_capture = replace(self.window.current_capture, voltage2=(0.1,))
+        self.window.current_capture = replace(self.window.current_capture, current=(0.1,))
         self.window.save_data()
         self.assertIn("儲存失敗", self.window.status_label.text())
         self.assertIsNone(self.window.last_excel_path)
@@ -617,6 +625,195 @@ class EmailTests(unittest.TestCase):
         self.assertNotIn(payload, "\n".join(logs.output))
         self.assertNotIn(payload, self.window.email_status_label.text())
         self.assertIn("SMTPAuthenticationError", "\n".join(logs.output))
+
+    def test_short_capture_preserves_previous_and_never_predicts_saves_or_mails(self):
+        self.capture(0.8, "OK")
+        previous = self.window.current_capture
+        short = replace(previous, voltage=previous.voltage[:1023], current=previous.current[:1023])
+        self.window._auto_save = True
+        with patch.object(self.window, "predict") as predict, patch.object(self.window, "save_data") as save:
+            self.window.complete_capture(short)
+            predict.assert_not_called()
+            save.assert_not_called()
+        self.assertIs(self.window.current_capture, previous)
+        self.assertIn("資料未足1024筆", self.window.status_label.text())
+        self.assertEqual(self.window.tableHistory.rowCount(), 1)
+        self.ssl_factory.assert_not_called()
+
+    def test_multisegment_one_notification_and_tail_export(self):
+        sample = self.sample_capture()
+        result = replace(sample, voltage=sample.voltage * 3 + (9.0,) * 30,
+                         current=sample.current * 3 + (0.1,) * 30)
+        with patch.object(self.window, "predict", side_effect=[(.9, "OK"), (.1, "NG"), (.2, "NG")]) as predict:
+            self.window.complete_capture(result)
+        self.assertEqual(predict.call_count, 3)
+        self.finished()
+        self.assertEqual(self.client.send_message.call_count, 1)
+        self.assertEqual(self.window.current_score, .1)
+        self.window.save_data()
+        self.assertTrue(Path(self.window.last_png_path).read_bytes().startswith(b"\x89PNG"))
+        workbook = load_workbook(self.window.last_excel_path)
+        try:
+            rows = list(workbook["擷取資料"].values)
+            self.assertEqual(rows[1][3:5], (.9, "OK"))
+            self.assertEqual(rows[1025][3:5], (.1, "NG"))
+            self.assertIsNone(rows[-1][3])
+            self.assertEqual(rows[-1][4], "未判定（不足1024筆）")
+            self.assertEqual(workbook["分段判定"].max_row, 4)
+        finally:
+            workbook.close()
+        self.assertEqual(self.client.send_message.call_count, 1)
+
+    def test_external_modes_stop_and_auto_save_only_current_capture(self):
+        from queue import Queue
+        for mode in (1, 2):
+            with self.subTest(mode=mode):
+                self.window.config["engineering"]["trigger_mode"] = mode
+                self.window._digital_pending = False
+                self.window._digital_ready = True
+                digital = Mock()
+                digital.events = Queue()
+                self.window._digital_worker = digital
+                started = threading.Event()
+                def continuous(settings, cancel, on_progress, stop):
+                    started.set()
+                    if not stop.wait(2):
+                        raise AssertionError("未收到停止")
+                    return self.sample_capture()
+                self.daq_read.side_effect = continuous
+                with patch.object(self.window, "predict", return_value=(.8, "OK")):
+                    self.window.handle_external_event("pressed")
+                    self.until(started.is_set)
+                    worker = self.window._capture_worker
+                    if mode == 1:
+                        self.window.handle_external_event("released")
+                        self.assertFalse(worker.stop.is_set())
+                    self.window.handle_external_event("pressed" if mode == 1 else "released")
+                    self.assertTrue(worker.stop.is_set())
+                    self.until(lambda: self.window._capture_worker is None, timeout=6)
+                self.assertTrue(Path(self.window.last_excel_path).exists())
+                self.assertTrue(Path(self.window.last_png_path).exists())
+                self.window._digital_worker = None
+        self.ssl_factory.assert_not_called()
+
+    def test_external_short_stop_does_not_autosave_previous(self):
+        self.capture(.8, "OK")
+        self.window._auto_save = True
+        with patch.object(self.window, "save_data") as save:
+            self.window.capture_failed("資料未足1024筆（本次300筆）")
+            save.assert_not_called()
+        self.assertFalse(self.window._auto_save)
+        self.assertIsNone(self.window.last_excel_path)
+
+    def test_engineering_dialog_validates_without_changing_existing_file(self):
+        before = self.config_path.read_bytes()
+        dialog = main.SettingsDialog(self.window.config, self.window.ui)
+        dialog.count_edit.setText("1000")
+        dialog.account_edit.setText("changed@example.com")
+        dialog.save_settings()
+        self.assertEqual(dialog.result(), 0)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertNotEqual(self.window.config["account"], "changed@example.com")
+        dialog.count_edit.setText("1024")
+        dialog.mode_combo.setCurrentIndex(2)
+        dialog.save_settings()
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["engineering"]["trigger_mode"], 2)
+        self.assertEqual(saved["engineering"]["trigger_line"], "any")
+        self.assertTrue(saved["engineering"]["active_high"])
+        self.assertEqual(saved["custom"], {"preserve": True})
+        dialog.deleteLater()
+
+    def test_png_existing_file_is_preserved_and_pair_uses_next_name(self):
+        self.capture(.8, "OK")
+        when = datetime(2026, 10, 15, 12)
+        folder = Path(self.temp.name)
+        existing = folder / "20261015_120000_001.png"
+        existing.write_bytes(b"existing")
+        path = main.save_capture_excel(folder, self.window.current_capture, .8, "OK", when,
+                                       segments=self.window.current_segments, report_png=b"new")
+        self.assertTrue(path.endswith("_002.xlsx"))
+        self.assertEqual(existing.read_bytes(), b"existing")
+        self.assertFalse(existing.with_suffix(".xlsx").exists())
+        self.assertEqual(Path(path).with_suffix(".png").read_bytes(), b"new")
+
+    def test_png_write_failure_removes_only_new_pair(self):
+        self.capture(.8, "OK")
+        folder = Path(self.temp.name)
+        original_open = Path.open
+        def open_file(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            if path.suffix == ".png" and args == ("xb",):
+                wrapper = Mock()
+                wrapper.__enter__ = Mock(return_value=wrapper)
+                wrapper.__exit__ = Mock(side_effect=lambda *ignored: stream.close())
+                wrapper.write.side_effect = OSError("disk full")
+                wrapper.close.side_effect = stream.close
+                return wrapper
+            return stream
+        with patch.object(Path, "open", open_file):
+            with self.assertRaises(OSError):
+                main.save_capture_excel(folder, self.window.current_capture, .8, "OK", datetime.now(),
+                                        segments=self.window.current_segments, report_png=b"PNG")
+        self.assertEqual(list(folder.glob("*.xlsx")), [])
+        self.assertEqual(list(folder.glob("*.png")), [])
+
+    def test_cancelled_completed_worker_does_not_publish_success(self):
+        from queue import Queue
+        worker = Mock()
+        worker.progress = Queue()
+        worker.results = Queue()
+        worker.results.put((self.sample_capture(), None))
+        worker.is_running.return_value = False
+        worker.cancel = threading.Event()
+        worker.cancel.set()
+        self.window._capture_worker = worker
+        self.window._auto_save = True
+        with patch.object(self.window, "predict") as predict, patch.object(self.window, "save_data") as save:
+            self.window.poll_capture_results()
+            predict.assert_not_called()
+            save.assert_not_called()
+        self.assertIsNone(self.window.current_capture)
+        self.ssl_factory.assert_not_called()
+
+    def test_close_waits_for_digital_worker_and_ignores_late_press(self):
+        from queue import Queue
+        digital = Mock()
+        digital.events = Queue()
+        digital.is_running.return_value = True
+        self.window._digital_worker = digital
+        self.window._digital_pending = False
+        self.window._digital_ready = True
+        self.window.ui.close()
+        self.assertTrue(self.window._closing)
+        digital.shutdown.assert_called()
+        digital.events.put(("pressed", ""))
+        self.window.poll_digital()
+        self.daq_read.assert_not_called()
+        digital.is_running.return_value = False
+        self.until(lambda: not self.window.ui.isVisible())
+        self.assertIsNone(self.window._digital_worker)
+        digital.wait.assert_called_once()
+
+    def test_internal_mode_di_only_resets_output(self):
+        digital = Mock()
+        self.window._digital_worker = digital
+        self.window._digital_ready = True
+        with patch.object(self.window, "capture_data") as capture:
+            self.window.handle_external_event("pressed")
+            capture.assert_not_called()
+        digital.alarm.clear.assert_called_once()
+        self.window._digital_worker = None
+
+    def test_preview_segments_are_not_reclassified_at_completion(self):
+        with patch.object(self.window, "predict", side_effect=[(.1, "NG"), (.8, "OK")]) as predict:
+            self.window.classify_segments(2048)
+            self.ssl_factory.assert_not_called()
+            result = self.sample_capture()
+            self.window.complete_capture(replace(result, voltage=result.voltage * 2, current=result.current * 2))
+        self.assertEqual(predict.call_count, 2)
+        self.finished()
+        self.assertEqual(self.client.send_message.call_count, 1)
 
 
 if __name__ == "__main__":

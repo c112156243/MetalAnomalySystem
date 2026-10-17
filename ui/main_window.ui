@@ -14,8 +14,9 @@ QLabel { color: white; }
 QLabel#lblTitle { color: #222222; font-size: 22px; font-weight: 700; }
 QLabel#lblScore { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 14px; border-radius: 2px; }
 QLabel#lblGateway1Title, QLabel#lblGateway2Title, QLabel#lblPredictionTitle { background-color: #4b78c6; color: white; font-size: 22px; font-weight: 700; padding: 10px 18px; }
+QLabel#lblPredictionTitle { font-size: 16px; padding: 4px 8px; }
 QLabel#lblGateway1, QLabel#lblGateway2 { color: white; font-size: 18px; }
-QLabel#lblVoltageValue, QLabel#lblVoltage2Value { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 8px 28px; }
+QLabel#lblVoltageValue, QLabel#lblCurrentValue { background-color: #4b78c6; color: white; font-size: 28px; font-weight: 700; padding: 8px 28px; }
 QLabel#lblPrediction { background-color: #4b78c6; color: white; font-size: 24px; font-weight: 700; padding: 12px 28px; }
 QLabel#lblStatus { background-color: #72b447; color: white; font-size: 18px; font-weight: 700; padding: 8px 14px; }
 QPushButton { background-color: #4b78c6; color: white; border: none; min-height: 48px; font-size: 20px; font-weight: 700; padding: 4px 14px; }
@@ -85,7 +86,7 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
           <property name="minimumSize"><size><width>240</width><height>100</height></size></property>
           <layout class="QVBoxLayout" name="settingsLayout">
            <property name="leftMargin"><number>34</number></property><property name="rightMargin"><number>34</number></property>
-           <item><widget class="QPushButton" name="btnSettings"><property name="text"><string>帳號設定</string></property></widget></item>
+           <item><widget class="QPushButton" name="btnSettings"><property name="text"><string>工程設定</string></property></widget></item>
            <item><widget class="QPushButton" name="btnExit"><property name="text"><string>離開</string></property></widget></item>
           </layout>
          </widget>
@@ -116,12 +117,12 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
           <layout class="QVBoxLayout" name="gateway2Layout">
            <item>
             <layout class="QHBoxLayout" name="gateway2HeaderLayout">
-             <item><widget class="QLabel" name="lblGateway2Title"><property name="text"><string>閘道位置2 (V)</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-             <item><widget class="QLabel" name="lblVoltage2Value"><property name="text"><string>-- V</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblGateway2Title"><property name="text"><string>閘道位置2 (A，模擬)</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+             <item><widget class="QLabel" name="lblCurrentValue"><property name="text"><string>-- A</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
              <item><widget class="QLabel" name="lblGateway2"><property name="text"><string>192.168.1.102</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
             </layout>
            </item>
-           <item><widget class="QWidget" name="voltagePlot2Container" native="true"/></item>
+           <item><widget class="QWidget" name="currentPlotContainer" native="true"/></item>
           </layout>
          </widget>
         </item>
@@ -129,10 +130,8 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
          <widget class="QFrame" name="predictionFrame">
           <property name="minimumSize"><size><width>700</width><height>190</height></size></property>
           <layout class="QVBoxLayout" name="predictionLayout">
-           <item><spacer name="pTop"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPredictionTitle"><property name="text"><string>閘道位置1</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPredictionTitle"><property name="text"><string>每1024筆模擬判定（尚無AI模型）</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
            <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPrediction"><property name="text"><string>預測結果：等待擷取</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
-           <item><spacer name="pBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
           </layout>
          </widget>
         </item>
@@ -142,9 +141,7 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
     </item>
     <item>
      <layout class="QHBoxLayout" name="statusLayout">
-      <item><spacer name="statusLeft"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>260</width><height>20</height></size></property></spacer></item>
       <item><widget class="QLabel" name="lblStatus"><property name="text"><string>系統待機中</string></property><property name="alignment"><set>Qt::AlignCenter</set></property><property name="minimumSize"><size><width>280</width><height>42</height></size></property></widget></item>
-      <item><spacer name="statusRight"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>500</width><height>20</height></size></property></spacer></item>
      </layout>
     </item>
    </layout>

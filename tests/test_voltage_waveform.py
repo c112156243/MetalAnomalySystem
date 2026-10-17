@@ -10,7 +10,7 @@ from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
 from daq_acquisition import CaptureProgress, CaptureResult, DAQ_DEFAULTS
-from voltage_waveform import VoltageWaveform
+from voltage_waveform import SignalWaveform
 
 
 class WaveformTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class WaveformTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.plot = VoltageWaveform()
+        self.plot = SignalWaveform()
         self.plot.resize(700, 180)
         self.addCleanup(self.close_plot)
 
@@ -30,11 +30,11 @@ class WaveformTests(unittest.TestCase):
 
     def test_time_coordinates_follow_actual_rate_and_dc_range_is_nonzero(self):
         self.plot.append_progress(CaptureProgress((0.002,) * 4, "Dev1/ai0", 2, 6, False,
-                                                 (-0.002,) * 4, "Dev1/ai1"))
+                                                 (-0.002,) * 4))
         self.assertEqual(self.plot.time_range, 2.5)
         self.assertEqual(list(self.plot.display_points(700)),
                          [(0, 0.002), (0.5, 0.002), (1, 0.002), (1.5, 0.002)])
-        low, high = self.plot.voltage_range()
+        low, high = self.plot.value_range()
         self.assertLess(low, 0.002)
         self.assertGreater(high, 0.002)
         self.assertFalse(self.plot.grab().isNull())
@@ -43,7 +43,7 @@ class WaveformTests(unittest.TestCase):
         values = [0.0] * 100000
         values[127], values[128] = 9.5, -8.5
         self.plot.append_progress(CaptureProgress(tuple(values), "Dev1/ai0", 250000, 100000, False,
-                                                 (0.1,) * 100000, "Dev1/ai1"))
+                                                 (0.1,) * 100000))
         points = list(self.plot.display_points(600))
         self.assertLessEqual(len(points), 4 * 600)
         self.assertIn((127 / 250000, 9.5), points)
@@ -51,36 +51,36 @@ class WaveformTests(unittest.TestCase):
         self.assertEqual(points, sorted(points))
         self.assertEqual(points[0], (0, 0))
         self.assertEqual(points[-1], (99999 / 250000, 0))
-        self.assertEqual(self.plot.voltage, values)
+        self.assertEqual(self.plot.values, values)
         self.assertFalse(self.plot.grab().isNull())
 
     def test_empty_and_single_sample_preview_render(self):
         self.assertFalse(self.plot.grab().isNull())
         self.plot.append_progress(CaptureProgress((-0.025,), "Dev1/ai0", 1, 2, True,
-                                                 (0.025,), "Dev1/ai1"))
+                                                 (0.025,)))
         self.assertEqual(list(self.plot.display_points(600)), [(0, -0.025)])
         self.assertFalse(self.plot.grab().isNull())
 
     def test_auto_scale_toggle_preserves_data_and_uses_each_capture_range(self):
         self.plot.begin_capture({**DAQ_DEFAULTS, "min_voltage": -5, "max_voltage": 5})
         self.plot.append_progress(CaptureProgress((-0.03, 0.04), "Dev1/ai0", 1000, 1000, False,
-                                                 (0.03, -0.04), "Dev1/ai1"))
+                                                 (0.03, -0.04)))
         self.assertTrue(self.plot.auto_scale.isChecked())
-        low, high = self.plot.voltage_range()
+        low, high = self.plot.value_range()
         self.assertLessEqual(low, -0.03)
         self.assertGreaterEqual(high, 0.04)
         self.assertLess(high - low, 0.2)
         self.plot.auto_scale.click()
-        self.assertEqual(self.plot.voltage_range(), (-5, 5))
-        self.assertEqual(self.plot.voltage, [-0.03, 0.04])
+        self.assertEqual(self.plot.value_range(), (-5, 5))
+        self.assertEqual(self.plot.values, [-0.03, 0.04])
         self.plot.show_capture(CaptureResult(
             (-0.1, 0.1), "Dev1/ai0", 1000, "DIFF", -2, 2, "USB-6211", False, datetime.now(),
-            (0.2, -0.2), "Dev1/ai1",
+            (0.2, -0.2),
         ))
-        self.assertEqual(self.plot.voltage_range(), (-2, 2))
+        self.assertEqual(self.plot.value_range(), (-2, 2))
         self.plot.begin_capture(DAQ_DEFAULTS)
         self.assertFalse(self.plot.auto_scale.isChecked())
-        self.assertEqual(self.plot.voltage_range(), (-10, 10))
+        self.assertEqual(self.plot.value_range(), (-10, 10))
         self.plot.auto_scale.click()
         self.assertTrue(self.plot.auto_scale.isChecked())
 
