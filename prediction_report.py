@@ -1,4 +1,4 @@
-"""1024 筆分段的模擬判定顯示與三圖 PNG 報告。"""
+"""1024 筆電壓分段的 ONNX 判定顯示與三圖 PNG 報告。"""
 
 from dataclasses import dataclass
 from io import BytesIO
@@ -17,6 +17,7 @@ class SegmentResult:
     stop: int
     score: float
     prediction: str
+    model_path: str = "ONNX"
 
 
 def draw_results(axes, segments, dark=False):
@@ -33,7 +34,7 @@ def draw_results(axes, segments, dark=False):
         axes.text(0.98, 0.82, f"OK: {rate:.1%}", transform=axes.transAxes,
                   ha="right", color=foreground,
                   bbox={"facecolor": axes.get_facecolor(), "alpha": 0.85, "edgecolor": "none"})
-    axes.set_xlabel("Segment (1024 samples) - simulated prediction", color=foreground, fontsize=9)
+    axes.set_xlabel("Segment (1024 samples) - ONNX voltage prediction", color=foreground, fontsize=9)
     axes.set_ylabel("Result", color=foreground, fontsize=9)
     axes.tick_params(colors=foreground, labelsize=8)
     for spine in axes.spines.values():
@@ -76,7 +77,7 @@ def render_report_png(capture, segments):
         axes.set_xlim(0, len(capture.voltage) - 1)
     draw_results(result, segments)
     tail = len(capture.voltage) % WINDOW_SIZE
-    figure.suptitle("Welding analysis - simulated prediction (no AI model)", fontsize=13)
+    figure.suptitle("Welding analysis - ONNX voltage prediction", fontsize=13)
     figure.text(0.5, 0.015, f"{len(capture.voltage)} samples; {len(segments)} classified segments; "
                 f"{tail} trailing samples retained without classification", ha="center", fontsize=9)
     figure.tight_layout(rect=(0, 0.035, 1, 0.96))

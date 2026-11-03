@@ -1,7 +1,7 @@
 import sys
 import os
 import json
-import random
+from onnx_prediction import OnnxPredictor, ModelError
 from datetime import datetime
 from queue import Empty
 from daq_acquisition import CaptureWorker, AcquisitionError, apply_daq_defaults
@@ -363,7 +363,9 @@ class MainWindow(QObject):
         self._auto_save = False
         self._stopping = False
         self._saving = False
-        self._preview_count = 0
+        self._preview_voltage = []
+        self._predictor = None
+        self._prediction_error = None
         self._segments = []
         self.current_segments = ()
         self._closing = False
@@ -434,7 +436,7 @@ class MainWindow(QObject):
         self.lblPrediction.setText(
             "預測結果：等待擷取"
         )
-        self.lblPrediction.setToolTip("OK／NG 仍為隨機測試判定，尚未串接 AI 模型；NG 依設定寄信。")
+        self.lblPrediction.setToolTip("ONNX 只使用電壓原值；分數為 OK 機率，NG 依設定寄信。")
 
         self.update_gateway_display()
 
@@ -532,12 +534,14 @@ class MainWindow(QObject):
             if engineering["do_channel"] and not self._digital_ready:
                 raise AcquisitionError("數位輸出尚未就緒，請確認工程設定與設備。")
             worker = CaptureWorker(self.config.get("daq", {}), continuous=external)
-        except AcquisitionError as error:
+            self._predictor = OnnxPredictor(engineering["model_path"], BASE_DIR)
+        except (AcquisitionError, ModelError) as error:
             self.capture_failed(str(error))
             return
         self._auto_save = external
+        self._preview_voltage = []
+        self._prediction_error = None
         self._stopping = False
-        self._preview_count = 0
         self._segments = []
         self.prediction_plot.show_segments(())
         self._latest_notification_id = None
@@ -590,16 +594,21 @@ class MainWindow(QObject):
                 progress = worker.progress.get_nowait()
             except Empty:
                 break
-            if not self._closing:
+            if not self._closing and self._prediction_error is None:
                 for plot, label in self.signal_views:
                     plot.append_progress(progress)
                     label.setText(f"{plot.values[-1]:.4f} {plot.unit}")
-                self._preview_count += len(progress.voltage)
-                self.classify_segments(self._preview_count)
+                self._preview_voltage.extend(progress.voltage)
+                try:
+                    self.classify_segments(self._preview_voltage)
+                except ModelError as error:
+                    self._prediction_error = str(error)
+                    worker.shutdown()
         if worker.is_running():
             return
         worker.wait()
         result, error = worker.results.get_nowait()
+        error = self._prediction_error or error
         if worker.cancel.is_set():
             result, error = None, error or "本次擷取已取消，資料未採用。"
         self._capture_worker = None
@@ -613,12 +622,14 @@ class MainWindow(QObject):
         else:
             self.capture_failed("本次擷取已取消，資料未採用。")
 
-    def classify_segments(self, count):
+    def classify_segments(self, voltage):
         changed = False
-        while len(self._segments) < count // WINDOW_SIZE:
-            score, prediction = self.predict()
+        while len(self._segments) < len(voltage) // WINDOW_SIZE:
             start = len(self._segments) * WINDOW_SIZE
-            self._segments.append(SegmentResult(start, start + WINDOW_SIZE, score, prediction))
+            score, prediction = self.predict(voltage[start:start + WINDOW_SIZE])
+            self._segments.append(SegmentResult(
+                start, start + WINDOW_SIZE, score, prediction,
+                self._predictor.path if self._predictor is not None else "ONNX"))
             changed = True
             reset_on_stop = self._stopping and self.config["engineering"]["trigger_mode"] == 1
             if prediction == "NG" and self._digital_worker is not None and not reset_on_stop:
@@ -693,10 +704,10 @@ class MainWindow(QObject):
             self.status_label.setText("已收到停止要求，正在整理資料並儲存 Excel 與 PNG...")
 
     def capture_failed(self, reason):
+        self._preview_voltage = []
         self._auto_save = False
         self._stopping = False
         self._segments = []
-        self._preview_count = 0
         self.prediction_plot.show_segments(self.current_segments)
         for plot, label in self.signal_views:
             if self.current_capture is not None:
@@ -727,10 +738,14 @@ class MainWindow(QObject):
         if len(result.voltage) != len(result.current):
             self.capture_failed("電壓與模擬電流筆數不一致。")
             return
-        self.classify_segments(len(result.voltage))
+        try:
+            self.classify_segments(result.voltage)
+        except ModelError as error:
+            self.capture_failed(str(error))
+            return
+        self._preview_voltage = []
         self.current_segments = tuple(self._segments)
         self._segments = []
-        self._preview_count = 0
         self.current_capture = result
         self.current_voltage = list(result.voltage)
         self.current_current = list(result.current)
@@ -758,7 +773,7 @@ class MainWindow(QObject):
         )
 
         self.lblPrediction.setText(
-            f"模擬判定：{prediction}（{len(self.current_segments)} 段）"
+            f"AI 判定：{prediction}（{len(self.current_segments)} 段）"
         )
 
         # ----------------------------------------------------
@@ -799,7 +814,7 @@ class MainWindow(QObject):
 
         self.status_label.setText(
             f"擷取完成：{result.channel} 電壓，{len(result.voltage)} 筆，"
-            f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流為程式模擬，OK／NG 為隨機測試"
+            f"{'NI 模擬裝置' if result.is_simulated else '實體裝置'}；電流為程式模擬，AI 僅判斷電壓"
         )
 
         self.status_label.setStyleSheet(
@@ -885,38 +900,10 @@ class MainWindow(QObject):
     # 預測
     # ========================================================
 
-    def predict(self):
-
-        """
-        目前先使用模擬模型。
-
-        未來這裡改成：
-
-        Voltage + Current
-                ↓
-            preprocessing
-                ↓
-             1DCNN
-                ↓
-             probability
-                ↓
-              OK / NG
-        """
-
-        score = random.uniform(
-            0.0,
-            1.0
-        )
-
-        if score >= 0.5:
-
-            prediction = "OK"
-
-        else:
-
-            prediction = "NG"
-
-        return score, prediction
+    def predict(self, voltage):
+        if self._predictor is None:
+            self._predictor = OnnxPredictor(self.config["engineering"]["model_path"], BASE_DIR)
+        return self._predictor.predict(voltage)
 
     # ========================================================
     # 歷史紀錄

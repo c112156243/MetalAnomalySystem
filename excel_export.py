@@ -50,7 +50,7 @@ def save_capture_excel(folder, capture, score, prediction, saved_at, segments=No
         ["儲存時間", saved_at],
         ["Voltage 單位", "V"],
         ["Current", "程式模擬（非實測），不由電壓換算"],
-        ["Score / Prediction", "隨機測試判定，尚未串接 AI 模型"],
+        ["Score / Prediction", "ONNX 電壓原值推論；Score 為 OK 機率，類別為最大機率（平手 OK）"],
         ["Timestamp", "儲存時間，非逐筆取樣時間"],
         ["Current 單位", "A"],
         ["電流模擬波形", "正弦波"],
@@ -78,7 +78,8 @@ def save_capture_excel(folder, capture, score, prediction, saved_at, segments=No
         results = workbook.create_sheet("分段判定")
         results.append(["段號", "起始樣本索引", "結束樣本索引", "Score", "Prediction", "來源"])
         for index, item in enumerate(segments, 1):
-            results.append([index, item.start, item.stop - 1, item.score, item.prediction, "隨機模擬，非 AI"])
+            results.append([index, item.start, item.stop - 1, item.score, item.prediction,
+                            f"ONNX；電壓原值；分數=P(OK)；模型={item.model_path}"])
         results.freeze_panes = "A2"
         results.auto_filter.ref = results.dimensions
         for column in "ABCDEF":

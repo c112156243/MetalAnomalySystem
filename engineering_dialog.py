@@ -65,7 +65,7 @@ class EngineeringDialog(QDialog):
             ("取樣率（每秒筆數）", self.rate_edit), ("觸發模式", self.mode_combo),
         ):
             form.addRow(label, widget)
-        for label, edit, directory in (("模型路徑（預留）", self.model_edit, False),
+        for label, edit, directory in (("ONNX 模型路徑", self.model_edit, False),
                                        ("儲存路徑", self.path_edit, True)):
             row = QHBoxLayout()
             row.addWidget(edit)
@@ -75,7 +75,8 @@ class EngineeringDialog(QDialog):
             form.addRow(label, row)
         form.addRow("帳號（收件 Email）", self.account_edit)
         form.addRow("通知裝置編號", self.device_edit)
-        note = QLabel("每 1024 筆模擬判定一次，尚未載入 AI 模型。\n"
+        note = QLabel("每 1024 筆電壓原值進行 ONNX 判定；電流不參與。\n"
+                      "模型路徑留空使用 models/best_model.onnx，擷取前檢查模型。\n"
                       "外部模式持續至停止，最多 60 秒或 100000 筆。\n"
                       "外部檔案讀取本版暫不提供；關閉設定頁不會儲存變更。")
         note.setWordWrap(True)
@@ -96,7 +97,7 @@ class EngineeringDialog(QDialog):
 
     def select_path(self, edit, directory):
         path = (QFileDialog.getExistingDirectory(self, "選擇儲存資料夾") if directory else
-                QFileDialog.getOpenFileName(self, "選擇模型（本版僅保存路徑）")[0])
+                QFileDialog.getOpenFileName(self, "選擇 ONNX 模型", "", "ONNX 模型 (*.onnx)")[0])
         if path:
             edit.setText(path)
 

@@ -130,7 +130,7 @@ QTableCornerButton::section { background-color: #333333; border: 1px solid #5555
          <widget class="QFrame" name="predictionFrame">
           <property name="minimumSize"><size><width>700</width><height>190</height></size></property>
           <layout class="QVBoxLayout" name="predictionLayout">
-           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPredictionTitle"><property name="text"><string>每1024筆模擬判定（尚無AI模型）</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+           <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPredictionTitle"><property name="text"><string>每1024筆電壓 AI 判定（ONNX）</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
            <item alignment="Qt::AlignHCenter"><widget class="QLabel" name="lblPrediction"><property name="text"><string>預測結果：等待擷取</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
           </layout>
          </widget>

@@ -153,7 +153,7 @@ class EmailTests(unittest.TestCase):
             self.assertEqual(workbook["擷取設定"]["B16"].value, "A")
             self.assertTrue(all(row[5] == "程式模擬（非實測）" for row in rows[1:]))
             self.assertIn("程式模擬", workbook["擷取設定"]["B13"].value)
-            self.assertIn("尚未串接 AI", workbook["擷取設定"]["B14"].value)
+            self.assertIn("ONNX 電壓原值推論", workbook["擷取設定"]["B14"].value)
         finally:
             workbook.close()
 
@@ -660,6 +660,9 @@ class EmailTests(unittest.TestCase):
             self.assertIsNone(rows[-1][3])
             self.assertEqual(rows[-1][4], "未判定（不足1024筆）")
             self.assertEqual(workbook["分段判定"].max_row, 4)
+            self.assertIn("ONNX；電壓原值", workbook["分段判定"]["F2"].value)
+            metadata = dict(workbook["擷取設定"].values)
+            self.assertIn("OK 機率", metadata["Score / Prediction"])
         finally:
             workbook.close()
         self.assertEqual(self.client.send_message.call_count, 1)
@@ -807,13 +810,84 @@ class EmailTests(unittest.TestCase):
 
     def test_preview_segments_are_not_reclassified_at_completion(self):
         with patch.object(self.window, "predict", side_effect=[(.1, "NG"), (.8, "OK")]) as predict:
-            self.window.classify_segments(2048)
+            self.window.classify_segments(self.sample_capture().voltage * 2)
             self.ssl_factory.assert_not_called()
             result = self.sample_capture()
             self.window.complete_capture(replace(result, voltage=result.voltage * 2, current=result.current * 2))
         self.assertEqual(predict.call_count, 2)
         self.finished()
         self.assertEqual(self.client.send_message.call_count, 1)
+
+    def test_onnx_receives_voltage_windows_only_and_retains_tail(self):
+        result = self.sample_capture()
+        voltage = result.voltage + tuple(value + 2 for value in result.voltage) + (9.0,)
+        model = Mock(path="test-model.onnx")
+        model.predict.side_effect = [(.9, "OK"), (.8, "OK")]
+        self.window._predictor = model
+        self.window.complete_capture(replace(result, voltage=voltage, current=(99.0,) * len(voltage)))
+        self.assertEqual(model.predict.call_count, 2)
+        self.assertEqual(model.predict.call_args_list[0].args[0], voltage[:1024])
+        self.assertEqual(model.predict.call_args_list[1].args[0], voltage[1024:2048])
+        self.assertEqual(self.window.current_score, .8)
+        self.assertEqual(self.window.current_voltage[-1], 9.0)
+        self.assertEqual(self.window.current_segments[0].model_path, "test-model.onnx")
+        self.ssl_factory.assert_not_called()
+
+    def test_missing_model_prevents_daq_start(self):
+        self.window.config["engineering"]["model_path"] = "models/missing.onnx"
+        self.window.capture_data()
+        self.daq_read.assert_not_called()
+        self.ssl_factory.assert_not_called()
+        self.assertIsNone(self.window._capture_worker)
+        self.assertIn("找不到 ONNX 模型", self.window.status_label.text())
+
+    def test_model_failure_preserves_previous_capture_without_save_or_mail(self):
+        self.capture(.9, "OK")
+        previous = self.window.current_capture
+        self.window._predictor = Mock()
+        self.window._predictor.predict.side_effect = main.ModelError("測試推論失敗")
+        self.window._auto_save = True
+        with patch.object(self.window, "save_data") as save:
+            self.window.complete_capture(self.sample_capture())
+            save.assert_not_called()
+        self.assertIs(self.window.current_capture, previous)
+        self.assertEqual(self.window.tableHistory.rowCount(), 1)
+        self.assertIn("測試推論失敗", self.window.status_label.text())
+        self.ssl_factory.assert_not_called()
+
+    def test_preview_model_failure_cancels_worker_and_can_retry(self):
+        result = self.sample_capture()
+
+        def preview_then_wait(settings, cancel, on_progress):
+            on_progress(daq.CaptureProgress(result.voltage, "Dev1/ai0", 1000, 1024,
+                                            False, result.current))
+            cancel.wait(3)
+            return result
+
+        self.daq_read.side_effect = preview_then_wait
+        with patch.object(self.window, "predict", side_effect=main.ModelError("預覽推論失敗")), \
+                patch.object(self.window, "save_data") as save:
+            self.window.capture_data()
+            self.until(lambda: self.window._capture_worker is None)
+            save.assert_not_called()
+        self.assertIn("預覽推論失敗", self.window.status_label.text())
+        self.assertEqual(self.window.tableHistory.rowCount(), 0)
+        self.ssl_factory.assert_not_called()
+        self.daq_read.side_effect = None
+        with patch.object(self.window, "predict", return_value=(.9, "OK")):
+            self.window.capture_data()
+            self.until(lambda: self.window._capture_worker is None)
+        self.assertEqual(self.window.current_prediction, "OK")
+
+    def test_actual_onnx_capture_matches_direct_inference(self):
+        self.window.config["email"]["enabled"] = False
+        expected = main.OnnxPredictor("", main.BASE_DIR).predict(self.sample_capture().voltage)
+        self.window.capture_data()
+        self.until(lambda: self.window._capture_worker is None)
+        self.assertEqual((self.window.current_score, self.window.current_prediction), expected)
+        self.assertIn("AI 判定", self.window.lblPrediction.text())
+        self.assertEqual(self.window.tableHistory.rowCount(), 1)
+        self.ssl_factory.assert_not_called()
 
 
 if __name__ == "__main__":
