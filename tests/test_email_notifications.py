@@ -478,10 +478,10 @@ class EmailTests(unittest.TestCase):
             self.assertEqual(self.window.voltage_plot.values, list(preview.voltage))
             self.assertEqual(self.window.current_plot.values, list(preview.current))
             self.assertEqual(self.window.current_plot.channel, "程式模擬電流")
-            self.assertEqual(self.window.current_plot.time_range, self.window.voltage_plot.time_range)
+            self.assertEqual(self.window.current_plot.time_range, 1.0)
             self.assertEqual(self.window.ui.lblCurrentValue.text(), "-0.3000 A")
             self.assertEqual(self.window.voltage_plot.sample_rate, 999)
-            self.assertEqual(self.window.voltage_plot.time_range, 1.0)
+            self.assertEqual(self.window.voltage_plot.time_range, 59 / self.window.voltage_plot.sample_rate)
             self.assertTrue(self.window.voltage_plot.is_simulated)
             self.assertEqual(self.window.ui.lblVoltageValue.text(), "0.3000 V")
             self.assertIsNone(self.window.current_capture)
@@ -492,7 +492,7 @@ class EmailTests(unittest.TestCase):
         self.assertEqual(self.window.voltage_plot.values, self.window.current_voltage)
         self.assertEqual(self.window.current_plot.values, self.window.current_current)
         self.assertEqual(self.window.ui.lblCurrentValue.text(), "-0.5115 A")
-        self.assertEqual(self.window.voltage_plot.time_range, 1.023)
+        self.assertEqual(self.window.voltage_plot.time_range, 59 / self.window.voltage_plot.sample_rate)
         self.assertEqual(self.window.voltage_plot.message, "擷取完成")
         self.assertEqual(self.window.ui.lblVoltageValue.text(), "1.0230 V")
         self.assertEqual(self.window.tableHistory.rowCount(), 1)
@@ -711,6 +711,7 @@ class EmailTests(unittest.TestCase):
     def test_engineering_dialog_validates_without_changing_existing_file(self):
         before = self.config_path.read_bytes()
         dialog = main.SettingsDialog(self.window.config, self.window.ui)
+        self.assertEqual(dialog.led_mode_combo.currentData(), "ng")
         dialog.count_edit.setText("1000")
         dialog.account_edit.setText("changed@example.com")
         dialog.save_settings()
@@ -719,13 +720,21 @@ class EmailTests(unittest.TestCase):
         self.assertNotEqual(self.window.config["account"], "changed@example.com")
         dialog.count_edit.setText("1024")
         dialog.mode_combo.setCurrentIndex(2)
+        dialog.led_mode_combo.setCurrentIndex(dialog.led_mode_combo.findData("button"))
         dialog.save_settings()
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
         self.assertEqual(saved["engineering"]["trigger_mode"], 2)
+        self.assertEqual(saved["engineering"]["led_mode"], "button")
         self.assertEqual(saved["engineering"]["trigger_line"], "any")
         self.assertTrue(saved["engineering"]["active_high"])
         self.assertEqual(saved["custom"], {"preserve": True})
         dialog.deleteLater()
+        reopened = main.SettingsDialog(main.load_config(), self.window.ui)
+        self.assertEqual(reopened.led_mode_combo.currentData(), "button")
+        reopened.led_mode_combo.setCurrentIndex(reopened.led_mode_combo.findData("ng"))
+        reopened.save_settings()
+        self.assertEqual(json.loads(self.config_path.read_text(encoding="utf-8"))["engineering"]["led_mode"], "ng")
+        reopened.deleteLater()
 
     def test_png_existing_file_is_preserved_and_pair_uses_next_name(self):
         self.capture(.8, "OK")
@@ -807,6 +816,42 @@ class EmailTests(unittest.TestCase):
             capture.assert_not_called()
         digital.alarm.clear.assert_called_once()
         self.window._digital_worker = None
+
+    def test_ng_led_latches_through_toggle_stop_until_next_capture(self):
+        self.window.config["engineering"].update(trigger_mode=1, do_channel="Dev1/port1/line0")
+        self.window._digital_ready = True
+        digital = Mock(alarm=threading.Event())
+        result = self.sample_capture()
+        with patch.object(self.window, "_digital_worker", digital), patch.object(
+                self.window, "_capture_worker", Mock()), patch.object(
+                self.window, "predict", side_effect=[(.9, "OK"), (.1, "NG"), (.2, "NG")]):
+            self.window._auto_save = True
+            self.window.classify_segments(result.voltage)
+            self.assertFalse(digital.alarm.is_set())
+            self.window.classify_segments(result.voltage * 2)
+            self.assertTrue(digital.alarm.is_set())
+            self.window.handle_external_event("pressed")
+            self.window._capture_worker.finish.assert_called_once()
+            self.assertTrue(digital.alarm.is_set())
+            # 若停止後才判定第一個 NG，也應點亮。
+            digital.alarm.clear()
+            self.window._capture_worker = None
+            with patch.object(self.window, "save_data"), patch.object(self.window, "notify_capture_completed"):
+                self.window.complete_capture(replace(result, voltage=result.voltage * 3, current=result.current * 3))
+            self.assertTrue(digital.alarm.is_set())
+            with patch.object(self.window, "capture_data") as capture:
+                self.window.handle_external_event("pressed")
+                capture.assert_called_once_with(external=True)
+            self.assertFalse(digital.alarm.is_set())
+
+    def test_button_led_mode_keeps_ng_prediction_without_latching_alarm(self):
+        self.window.config["engineering"]["led_mode"] = "button"
+        digital = Mock(alarm=threading.Event())
+        with patch.object(self.window, "_digital_worker", digital), patch.object(
+                self.window, "predict", return_value=(.1, "NG")):
+            self.window.classify_segments(self.sample_capture().voltage)
+        self.assertEqual(self.window._segments[0].prediction, "NG")
+        self.assertFalse(digital.alarm.is_set())
 
     def test_preview_segments_are_not_reclassified_at_completion(self):
         with patch.object(self.window, "predict", side_effect=[(.1, "NG"), (.8, "OK")]) as predict:

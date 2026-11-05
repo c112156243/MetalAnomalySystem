@@ -77,7 +77,11 @@ class SignalWaveform(QWidget):
 
     @property
     def sample_range(self):
-        return self.total_samples - 1
+        return max(1, self.total_samples - 1) if self.current_mode else 59
+
+    @property
+    def first_visible_sample(self):
+        return 0 if self.current_mode else max(0, len(self.values) - 60)
 
     @property
     def time_range(self):
@@ -86,7 +90,8 @@ class SignalWaveform(QWidget):
     def value_range(self):
         if not self.auto_scale.isChecked() or not self.values:
             return self.fixed_value_range
-        low, high = min(self.values), max(self.values)
+        visible = self.values[self.first_visible_sample:]
+        low, high = min(visible), max(visible)
         margin = max((high - low) * 0.05, 0.001)
         step = self.tick_step((high - low + 2 * margin) / 8)
         return math.floor((low - margin) / step) * step, math.ceil((high + margin) / step) * step
@@ -100,8 +105,8 @@ class SignalWaveform(QWidget):
 
     def display_points(self, width):
         """保留每個像素區間的極值與時間順序，避免大量樣本掩蓋尖峰。"""
-        step = max(1, math.ceil(self.total_samples / max(1, int(width))))
-        for start in range(0, len(self.values), step):
+        step = max(1, math.ceil((self.sample_range + 1) / max(1, int(width))))
+        for start in range(self.first_visible_sample, len(self.values), step):
             stop = min(start + step, len(self.values))
             indices = range(start, stop)
             low = min(indices, key=self.values.__getitem__)
@@ -121,7 +126,8 @@ class SignalWaveform(QWidget):
         ticks = [i * step for i in range(math.ceil(low / step), math.floor(high / step) + 1)]
         labels = [f"{value:.5g}" for value in ticks]
         left = max(42, max(painter.fontMetrics().horizontalAdvance(v) for v in labels) + 8)
-        time_labels = [f"{self.time_range * i / 4:.4g}" for i in range(5)]
+        start_time = self.first_visible_sample / self.sample_rate
+        time_labels = [f"{start_time + self.time_range * i / 4:.6g}" for i in range(5)]
         label_width = max(painter.fontMetrics().horizontalAdvance(v) for v in time_labels)
         right = max(12, label_width / 2 + 4)
         plot = QRectF(left, 30, max(1, self.width() - left - right), plot_height)
@@ -156,7 +162,7 @@ class SignalWaveform(QWidget):
             path = QPainterPath()
             for index, (seconds, value) in enumerate(self.display_points(plot.width())):
                 point = QPointF(
-                    plot.left() + seconds / self.time_range * plot.width(),
+                    plot.left() + (seconds - start_time) / self.time_range * plot.width(),
                     plot.bottom() - (value - low) / (high - low) * plot.height(),
                 )
                 if index == 0:

@@ -35,7 +35,12 @@ class EngineeringDialog(QDialog):
         self.gateway2_edit.setEnabled(False)
         self.di_edit = QLineEdit(engineering["di_channel"].split("/", 1)[-1])
         self.do_edit = QLineEdit(engineering["do_channel"].split("/", 1)[-1])
-        self.do_edit.setPlaceholderText("空白停用；例如 port1/line0")
+        self.do_edit.setPlaceholderText("空白停用；例如 PFI4 填 port1/line0")
+        self.led_mode_combo = QComboBox()
+        self.led_mode_combo.addItem("NG 時才會亮燈", "ng")
+        self.led_mode_combo.addItem("只要按下按鈕就會亮燈", "button")
+        self.led_mode_combo.setCurrentIndex(self.led_mode_combo.findData(engineering["led_mode"]))
+        self.led_mode_combo.setToolTip("按鈕模式為按住外部按鈕亮燈，放開熄燈。")
         self.count_edit = QLineEdit(str(daq["samples_per_channel"]))
         self.rate_edit = QLineEdit(str(daq["sample_rate"]))
         self.mode_combo = QComboBox()
@@ -61,7 +66,8 @@ class EngineeringDialog(QDialog):
             ("DAQ 裝置名稱", self.daq_device_edit), ("類比輸入閘道1", self.gateway1_edit),
             ("類比輸入閘道2", self.gateway2_edit), ("數位輸入閘道1", self.di_edit),
             ("按鈕觸發線", self.line_combo), ("按下有效電位", self.level_combo),
-            ("數位輸出閘道1", self.do_edit), ("取樣點數（內部模式）", self.count_edit),
+            ("警示燈（數位輸出）", self.do_edit), ("警示燈模式", self.led_mode_combo),
+            ("取樣點數（內部模式）", self.count_edit),
             ("取樣率（每秒筆數）", self.rate_edit), ("觸發模式", self.mode_combo),
         ):
             form.addRow(label, widget)
@@ -115,6 +121,7 @@ class EngineeringDialog(QDialog):
                 di_channel=device + "/" + self.di_edit.text().strip().lstrip("/"),
                 trigger_line=self.line_combo.currentData(), active_high=self.level_combo.currentData(),
                 do_channel=device + "/" + do_line if do_line else "",
+                led_mode=self.led_mode_combo.currentData(),
                 model_path=self.model_edit.text().strip(),
             )
             candidate.update(save_path=self.path_edit.text().strip(), account=self.account_edit.text().strip(),

@@ -631,8 +631,8 @@ class MainWindow(QObject):
                 start, start + WINDOW_SIZE, score, prediction,
                 self._predictor.path if self._predictor is not None else "ONNX"))
             changed = True
-            reset_on_stop = self._stopping and self.config["engineering"]["trigger_mode"] == 1
-            if prediction == "NG" and self._digital_worker is not None and not reset_on_stop:
+            if (prediction == "NG" and self._digital_worker is not None
+                    and self.config["engineering"].get("led_mode", "ng") == "ng"):
                 self._digital_worker.alarm.set()
         if changed:
             self.prediction_plot.show_segments(self._segments)
@@ -686,14 +686,14 @@ class MainWindow(QObject):
             return
         mode = self.config["engineering"]["trigger_mode"]
         if event == "pressed":
+            if mode and self._capture_worker is not None:
+                if mode == 1:
+                    self.stop_external_capture()
+                return
             if self._digital_worker is not None:
                 self._digital_worker.alarm.clear()
-            if mode == 0:
-                return
-            if self._capture_worker is None:
+            if mode:
                 self.capture_data(external=True)
-            elif mode == 1:
-                self.stop_external_capture()
         elif event == "released" and mode == 2:
             self.stop_external_capture()
 

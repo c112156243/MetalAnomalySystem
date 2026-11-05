@@ -31,7 +31,7 @@ class WaveformTests(unittest.TestCase):
     def test_time_coordinates_follow_actual_rate_and_dc_range_is_nonzero(self):
         self.plot.append_progress(CaptureProgress((0.002,) * 4, "Dev1/ai0", 2, 6, False,
                                                  (-0.002,) * 4))
-        self.assertEqual(self.plot.time_range, 2.5)
+        self.assertEqual(self.plot.time_range, 29.5)
         self.assertEqual(list(self.plot.display_points(700)),
                          [(0, 0.002), (0.5, 0.002), (1, 0.002), (1.5, 0.002)])
         low, high = self.plot.value_range()
@@ -41,18 +41,33 @@ class WaveformTests(unittest.TestCase):
 
     def test_large_batch_display_preserves_spikes_order_endpoints_and_raw_data(self):
         values = [0.0] * 100000
-        values[127], values[128] = 9.5, -8.5
+        values[99957], values[99958] = 9.5, -8.5
         self.plot.append_progress(CaptureProgress(tuple(values), "Dev1/ai0", 250000, 100000, False,
                                                  (0.1,) * 100000))
         points = list(self.plot.display_points(600))
-        self.assertLessEqual(len(points), 4 * 600)
-        self.assertIn((127 / 250000, 9.5), points)
-        self.assertIn((128 / 250000, -8.5), points)
+        self.assertEqual(len(points), 60)
+        self.assertIn((99957 / 250000, 9.5), points)
+        self.assertIn((99958 / 250000, -8.5), points)
         self.assertEqual(points, sorted(points))
-        self.assertEqual(points[0], (0, 0))
+        self.assertEqual(points[0], (99940 / 250000, 0))
         self.assertEqual(points[-1], (99999 / 250000, 0))
         self.assertEqual(self.plot.values, values)
         self.assertFalse(self.plot.grab().isNull())
+
+    def test_voltage_scrolls_after_sixty_and_scales_only_visible_values(self):
+        self.plot.append_progress(CaptureProgress((100.0,) + (0.0,) * 59,
+                                                 "Dev1/ai0", 1000, 1024, False, (0.0,) * 60))
+        self.assertEqual(self.plot.first_visible_sample, 0)
+        self.assertEqual(len(list(self.plot.display_points(600))), 60)
+        self.plot.append_progress(CaptureProgress((0.0,), "Dev1/ai0", 1000, 1024, False, (0.0,)))
+        points = list(self.plot.display_points(600))
+        self.assertEqual(points, [(i / 1000, 0.0) for i in range(1, 61)])
+        self.assertEqual(self.plot.time_range, 0.059)
+        self.assertLess(self.plot.value_range()[1], 1)
+        self.assertEqual(len(self.plot.values), 61)
+        self.assertFalse(self.plot.grab().isNull())
+        self.plot.begin_capture(DAQ_DEFAULTS)
+        self.assertEqual(self.plot.first_visible_sample, 0)
 
     def test_empty_and_single_sample_preview_render(self):
         self.assertFalse(self.plot.grab().isNull())

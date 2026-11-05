@@ -28,6 +28,7 @@
         "trigger_line": "any",
         "active_high": true,
         "do_channel": "",
+        "led_mode": "ng",
         "model_path": ""
     }
 }

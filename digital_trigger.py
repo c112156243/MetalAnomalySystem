@@ -74,10 +74,11 @@ class DigitalWorker:
                             pressed = any(value == self.settings["active_high"] for value in selected)
                             event = debouncer.update(pressed, monotonic())
                             if event:
-                                if event == "pressed":
-                                    self.alarm.clear()
                                 self.events.put((event, ""))
-                        desired = self.alarm.is_set()
+                        if self.settings.get("led_mode", "ng") == "button":
+                            desired = debouncer.stable is True
+                        else:
+                            desired = self.alarm.is_set()
                         if do is not None and desired != output:
                             do.write(desired)
                             output = desired

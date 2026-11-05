@@ -12,6 +12,7 @@ ENGINEERING_DEFAULTS = {
     "trigger_line": "any",
     "active_high": True,
     "do_channel": "",
+    "led_mode": "ng",
     "model_path": "",
 }
 
@@ -33,6 +34,8 @@ def validate_engineering(config):
     mode = block["trigger_mode"]
     if type(mode) is not int or mode not in (0, 1, 2):
         raise AcquisitionError("觸發模式必須為 0、1 或 2。")
+    if block["led_mode"] not in ("ng", "button"):
+        raise AcquisitionError("警示燈模式必須為 NG 時才亮燈或按下按鈕亮燈。")
     device = settings["channel"].split("/")[0]
     match = re.fullmatch(re.escape(device) + r"/port0/line([0-3])(?::([0-3]))?", block["di_channel"])
     if not match or (match[2] is not None and int(match[2]) < int(match[1])):

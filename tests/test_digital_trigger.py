@@ -20,10 +20,14 @@ class DigitalTests(unittest.TestCase):
         self.assertEqual(settings["trigger_line"], "any")
         self.assertIs(settings["active_high"], True)
         self.assertEqual(settings["do_channel"], "")
+        legacy = self.config()
+        del legacy["engineering"]["led_mode"]
+        self.assertEqual(validate_engineering(legacy)[0]["led_mode"], "ng")
         for changes in ({"di_channel": "Dev1/port0/line0:7"},
                         {"di_channel": "Dev2/port0/line0:3"},
                         {"do_channel": "Dev1/port0/line0"},
-                        {"active_high": None}, {"trigger_mode": True}):
+                        {"active_high": None}, {"trigger_mode": True},
+                        {"led_mode": "invalid"}, {"led_mode": None}):
             config = self.config()
             config["engineering"].update(changes)
             with self.assertRaises(AcquisitionError):
@@ -69,18 +73,22 @@ class DigitalTests(unittest.TestCase):
         worker = DigitalWorker(settings, lines)
         task = Mock()
         di = Mock()
-        di.read.return_value = [False] * 4
+        di.read.side_effect = [[False] * 4, [False] * 4, [True] * 4, [True] * 4, [True] * 4]
         di_context = Mock(__enter__=Mock(return_value=di), __exit__=Mock(return_value=False))
         context = Mock(__enter__=Mock(return_value=task), __exit__=Mock(return_value=False))
-        states = [True, True, False]
+        states = [True, True, True, False]
         def wait(seconds):
             if states:
                 worker.alarm.set() if states.pop(0) else worker.alarm.clear()
             else:
                 worker.cancel.set()
-        with patch("nidaqmx.Task", side_effect=[di_context, context]), patch.object(worker.cancel, "wait", side_effect=wait):
+        with patch("nidaqmx.Task", side_effect=[di_context, context]), patch.object(
+                worker.cancel, "wait", side_effect=wait), patch(
+                "digital_trigger.monotonic", side_effect=[0, .1, .2, .3, .4]):
             worker._run()
         self.assertEqual([call.args[0] for call in task.write.call_args_list], [False, True, False, False])
+        self.assertEqual(worker.events.get_nowait()[0], "ready")
+        self.assertEqual(worker.events.get_nowait()[0], "pressed")
         context.__exit__.assert_called_once()
         di_context.__exit__.assert_called_once()
 
@@ -100,3 +108,36 @@ class DigitalTests(unittest.TestCase):
         self.assertFalse(do.write.call_args.args[0])
         for context in contexts:
             context.__exit__.assert_called_once()
+
+    def test_button_led_follows_debounced_inputs_and_ignores_ng(self):
+        for mode in (0, 1, 2):
+            for active_high in (True, False):
+                with self.subTest(mode=mode, active_high=active_high):
+                    config = self.config()
+                    config["engineering"].update(trigger_mode=mode, active_high=active_high,
+                                                 do_channel="Dev1/port1/line0", led_mode="button")
+                    settings, lines = validate_engineering(config)
+                    worker = DigitalWorker(settings, lines)
+                    worker.alarm.set()
+                    levels = [[False] * 4, [False] * 4,
+                              [False, True, False, False], [False, True, False, False],
+                              [False, False, False, True], [False, False, False, True],
+                              [False] * 4, [False] * 4]
+                    def read(**kwargs):
+                        value = levels.pop(0)
+                        if not levels:
+                            worker.cancel.set()
+                        return value if active_high else [not item for item in value]
+                    di, do = Mock(), Mock()
+                    di.read.side_effect = read
+                    contexts = [Mock(__enter__=Mock(return_value=task), __exit__=Mock(return_value=False))
+                                for task in (di, do)]
+                    with patch("nidaqmx.Task", side_effect=contexts), patch(
+                            "digital_trigger.monotonic", side_effect=[i * .1 for i in range(8)]):
+                        worker._run()
+                    self.assertEqual([call.args[0] for call in do.write.call_args_list],
+                                     [False, True, False, False])
+                    self.assertEqual([worker.events.get_nowait()[0] for _ in range(worker.events.qsize())],
+                                     ["ready", "pressed", "released"])
+                    for context in contexts:
+                        context.__exit__.assert_called_once()
